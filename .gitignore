@@ -1,0 +1,5 @@
+node_modules
+release
+client/dist
+.DS_Store
+.vscode/

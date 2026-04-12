@@ -1,0 +1,72 @@
+{
+  "name": "clamav-antivirus-control-gui",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "author": "Ron Picard",
+  "description": "Desktop UI for ClamAV configuration (Electron)",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build:client": "npm run build --prefix client",
+    "prepare:server": "npm ci --prefix server --omit=dev",
+    "electron": "npm run build:client && electron .",
+    "pack": "npm run build:client && npm run prepare:server && electron-builder --dir",
+    "dist": "npm run build:client && npm run prepare:server && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "dev.clamav.gui",
+    "productName": "ClamAV Control",
+    "copyright": "Copyright © contributors",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server",
+        "to": "server",
+        "filter": [
+          "**/*",
+          "!**/.git/**"
+        ]
+      },
+      {
+        "from": "client/dist",
+        "to": "client/dist"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "maintainer": "ronpicard"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
