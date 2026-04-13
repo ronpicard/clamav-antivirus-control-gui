@@ -14,7 +14,7 @@
     "dist": "npm run build:client && npm run prepare:server && electron-builder"
   },
   "devDependencies": {
-    "electron": "^33.2.1",
+    "electron": "^33.4.11",
     "electron-builder": "^25.1.8"
   },
   "build": {

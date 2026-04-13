@@ -1333,24 +1333,37 @@ async function getClamdServiceState() {
 
 async function getRealtimeProtectionState() {
   const pl = process.platform;
-  if (pl !== "linux") {
-    return { available: false, running: false, detail: "On-access scanning (clamonacc) is mainly used on Linux." };
+  const monitor = realtimeState.running;
+  const method = realtimeState.method;
+
+  if (monitor) {
+    const methodLabel = { fswatch: "fswatch (ESF)", inotifywait: "inotifywait", "node-fswatch": "Node.js watcher" };
+    return {
+      available: true,
+      running: true,
+      detail: `Built-in monitor active (${methodLabel[method] || method})`,
+      unit: method,
+    };
   }
-  const which = await execQuick("which", ["clamonacc"]);
-  if (!which.ok || !which.stdout.trim()) {
-    return { available: false, running: false, detail: "clamonacc not found in PATH" };
-  }
-  for (const unit of ["clamav-clamonacc", "clamonacc"]) {
-    const st = await execQuick("systemctl", ["is-active", unit]);
-    if (st.ok && st.stdout.trim() === "active") {
-      return { available: true, running: true, unit, detail: "systemd reports active" };
+
+  if (pl === "linux") {
+    const which = await execQuick("which", ["clamonacc"]);
+    if (which.ok && which.stdout.trim()) {
+      for (const unit of ["clamav-clamonacc", "clamonacc"]) {
+        const st = await execQuick("systemctl", ["is-active", unit]);
+        if (st.ok && st.stdout.trim() === "active") {
+          return { available: true, running: true, unit, detail: "systemd reports active" };
+        }
+      }
+      const pg = await execQuick("pgrep", ["-x", "clamonacc"]);
+      if (pg.ok && pg.stdout.trim()) {
+        return { available: true, running: true, unit: "clamonacc", detail: "process running" };
+      }
     }
   }
-  const pg = await execQuick("pgrep", ["-x", "clamonacc"]);
-  if (pg.ok && pg.stdout.trim()) {
-    return { available: true, running: true, unit: "clamonacc", detail: "process running" };
-  }
-  return { available: true, running: false, detail: "clamonacc installed but service not active" };
+
+  const methodHint = pl === "darwin" ? "fswatch or built-in watcher" : pl === "win32" ? "built-in watcher" : "inotifywait or built-in watcher";
+  return { available: true, running: false, detail: `Not active — start from the Real-time tab (${methodHint})` };
 }
 
 async function runClamdServiceAction(action) {
@@ -1905,6 +1918,358 @@ async function runScanSession(scanId) {
   await finishScanSession(session);
 }
 
+// ─── Real-time file monitoring engine ─────────────────────────────────────────
+
+const realtimeState = {
+  running: false,
+  method: null,         // "fswatch" | "clamonacc" | "fswatch-node" | "inotifywait"
+  pid: null,
+  watchedDirs: [],
+  filesScanned: 0,
+  threatsFound: 0,
+  lastEvent: null,      // { file, status, detail, ts }
+  events: [],           // ring buffer of last 200 events
+  startedAt: null,
+  error: null,
+  child: null,          // internal, not serialised
+  scanQueue: [],        // internal
+  scanBusy: false,      // internal
+  sseClients: new Set(),
+};
+
+const RT_EVENT_RING_SIZE = 200;
+const RT_SCAN_CONCURRENCY = 2;
+
+function rtPushEvent(evt) {
+  realtimeState.events.push(evt);
+  if (realtimeState.events.length > RT_EVENT_RING_SIZE) {
+    realtimeState.events = realtimeState.events.slice(-RT_EVENT_RING_SIZE);
+  }
+  realtimeState.lastEvent = evt;
+  for (const client of realtimeState.sseClients) {
+    try { client.write(`data: ${JSON.stringify(evt)}\n\n`); } catch { /* ignore */ }
+  }
+}
+
+function rtSnapshot() {
+  return {
+    running: realtimeState.running,
+    method: realtimeState.method,
+    watchedDirs: realtimeState.watchedDirs,
+    filesScanned: realtimeState.filesScanned,
+    threatsFound: realtimeState.threatsFound,
+    lastEvent: realtimeState.lastEvent,
+    startedAt: realtimeState.startedAt,
+    error: realtimeState.error,
+  };
+}
+
+async function rtScanFile(filePath) {
+  if (!filePath || !fsSync.existsSync(filePath)) return;
+  let st;
+  try { st = fsSync.statSync(filePath); } catch { return; }
+  if (st.isDirectory() || st.size === 0) return;
+
+  realtimeState.filesScanned++;
+  const evt = { file: filePath, status: "scanning", detail: null, ts: Date.now() };
+
+  const bin = CLAMSCAN_BIN;
+  if (!bin || !fsSync.existsSync(bin)) {
+    evt.status = "error";
+    evt.detail = "clamscan not found";
+    rtPushEvent(evt);
+    return;
+  }
+
+  const args = ["-v", "--stdout", "--no-summary"];
+  try { fsSync.mkdirSync(QUARANTINE_DIR, { recursive: true }); } catch { /* ignore */ }
+  args.push(`--move=${QUARANTINE_DIR}`);
+
+  const confContent = readFileSafeSync(CLAMD_CONF);
+  if (confContent) {
+    const dbMatch = confContent.match(/^\s*DatabaseDirectory\s+(.+)$/im);
+    if (dbMatch) {
+      const dbDir = dbMatch[1].trim();
+      if (fsSync.existsSync(dbDir)) args.push("--database", dbDir);
+    }
+  }
+
+  args.push(filePath);
+
+  try {
+    const result = await runCmd(bin, args, { timeout: 60000 });
+    const out = (result.stdout || "") + (result.stderr || "");
+    if (result.code === 1 || /FOUND/i.test(out)) {
+      evt.status = "threat";
+      const m = out.match(/:\s*(.+)\s+FOUND/);
+      evt.detail = m ? m[1].trim() : "Threat detected";
+      realtimeState.threatsFound++;
+    } else if (result.code === 0) {
+      evt.status = "clean";
+    } else {
+      evt.status = "error";
+      evt.detail = `exit ${result.code}: ${(result.stderr || "").slice(0, 200)}`;
+    }
+  } catch (e) {
+    evt.status = "error";
+    evt.detail = String(e).slice(0, 200);
+  }
+  evt.ts = Date.now();
+  rtPushEvent(evt);
+}
+
+async function rtDrainQueue() {
+  if (realtimeState.scanBusy) return;
+  realtimeState.scanBusy = true;
+  while (realtimeState.scanQueue.length > 0 && realtimeState.running) {
+    const batch = realtimeState.scanQueue.splice(0, RT_SCAN_CONCURRENCY);
+    await Promise.all(batch.map((f) => rtScanFile(f)));
+  }
+  realtimeState.scanBusy = false;
+}
+
+function rtEnqueueFile(filePath) {
+  if (!realtimeState.running) return;
+  const ext = path.extname(filePath).toLowerCase();
+  const skipExts = new Set([".log", ".tmp", ".swp", ".lock", ".pid", ".sock"]);
+  if (skipExts.has(ext)) return;
+  const skipPaths = [QUARANTINE_DIR, "/proc", "/sys", "/dev"];
+  if (skipPaths.some((p) => filePath.startsWith(p))) return;
+  realtimeState.scanQueue.push(filePath);
+  void rtDrainQueue();
+}
+
+function rtDefaultWatchDirs() {
+  const home = os.homedir();
+  const dirs = [
+    path.join(home, "Downloads"),
+    path.join(home, "Documents"),
+    path.join(home, "Desktop"),
+  ];
+  if (process.platform === "darwin") {
+    dirs.push(path.join(home, "Applications"));
+  }
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA;
+    if (appData) dirs.push(path.join(appData, "..\\Local\\Temp"));
+  } else {
+    dirs.push("/tmp");
+  }
+  return dirs.filter((d) => {
+    try { return fsSync.statSync(d).isDirectory(); } catch { return false; }
+  });
+}
+
+// --- macOS: fswatch backend (ESF-aware when available) ---
+function rtStartFswatch(dirs) {
+  const fswatchPath = ["/opt/homebrew/bin/fswatch", "/usr/local/bin/fswatch"]
+    .find((p) => fsSync.existsSync(p));
+  if (!fswatchPath) return null;
+
+  const args = [
+    "--recursive",
+    "--event", "Created",
+    "--event", "Updated",
+    "--event", "MovedTo",
+    "--event", "Renamed",
+    "--batch-marker=---BATCH---",
+    ...dirs,
+  ];
+
+  const child = spawn(fswatchPath, args, {
+    cwd: SAFE_CWD,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let lineBuf = "";
+  child.stdout.on("data", (chunk) => {
+    lineBuf += chunk.toString();
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop() || "";
+    for (const line of lines) {
+      const f = line.trim();
+      if (!f || f === "---BATCH---") continue;
+      rtEnqueueFile(f);
+    }
+  });
+
+  child.on("error", (e) => {
+    realtimeState.error = `fswatch error: ${e.message}`;
+    rtStop();
+  });
+
+  child.on("exit", (code) => {
+    if (realtimeState.running && realtimeState.method === "fswatch") {
+      realtimeState.error = `fswatch exited unexpectedly (code ${code})`;
+      realtimeState.running = false;
+      realtimeState.child = null;
+    }
+  });
+
+  return child;
+}
+
+// --- Linux: inotifywait backend ---
+function rtStartInotifywait(dirs) {
+  const bin = ["/usr/bin/inotifywait", "/usr/local/bin/inotifywait"]
+    .find((p) => fsSync.existsSync(p));
+  if (!bin) return null;
+
+  const args = [
+    "-m", "-r",
+    "-e", "create,close_write,moved_to",
+    "--format", "%w%f",
+    ...dirs,
+  ];
+
+  const child = spawn(bin, args, {
+    cwd: SAFE_CWD,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let lineBuf = "";
+  child.stdout.on("data", (chunk) => {
+    lineBuf += chunk.toString();
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop() || "";
+    for (const line of lines) {
+      const f = line.trim();
+      if (f) rtEnqueueFile(f);
+    }
+  });
+
+  child.on("error", (e) => {
+    realtimeState.error = `inotifywait error: ${e.message}`;
+    rtStop();
+  });
+
+  child.on("exit", (code) => {
+    if (realtimeState.running && realtimeState.method === "inotifywait") {
+      realtimeState.error = `inotifywait exited unexpectedly (code ${code})`;
+      realtimeState.running = false;
+      realtimeState.child = null;
+    }
+  });
+
+  return child;
+}
+
+// --- Windows / universal fallback: Node.js fs.watch ---
+const nodeWatchers = [];
+
+function rtStartNodeWatch(dirs) {
+  for (const dir of dirs) {
+    try {
+      const w = fsSync.watch(dir, { recursive: true }, (eventType, filename) => {
+        if (!filename) return;
+        const full = path.join(dir, filename);
+        if (eventType === "rename" || eventType === "change") {
+          setTimeout(() => {
+            try {
+              if (fsSync.existsSync(full) && fsSync.statSync(full).isFile()) {
+                rtEnqueueFile(full);
+              }
+            } catch { /* file may have been deleted */ }
+          }, 200);
+        }
+      });
+      nodeWatchers.push(w);
+    } catch { /* dir may not be watchable */ }
+  }
+  return nodeWatchers.length > 0;
+}
+
+function rtStopNodeWatchers() {
+  while (nodeWatchers.length) {
+    try { nodeWatchers.pop().close(); } catch { /* ignore */ }
+  }
+}
+
+// --- Orchestrator ---
+function rtStart(customDirs) {
+  if (realtimeState.running) return { ok: false, error: "Already running" };
+
+  const dirs = customDirs?.length ? customDirs : rtDefaultWatchDirs();
+  if (!dirs.length) return { ok: false, error: "No valid directories to watch" };
+
+  realtimeState.watchedDirs = dirs;
+  realtimeState.filesScanned = 0;
+  realtimeState.threatsFound = 0;
+  realtimeState.events = [];
+  realtimeState.lastEvent = null;
+  realtimeState.error = null;
+  realtimeState.scanQueue = [];
+  realtimeState.scanBusy = false;
+  realtimeState.startedAt = Date.now();
+
+  const pl = process.platform;
+
+  if (pl === "darwin") {
+    const child = rtStartFswatch(dirs);
+    if (child) {
+      realtimeState.running = true;
+      realtimeState.method = "fswatch";
+      realtimeState.child = child;
+      realtimeState.pid = child.pid;
+      rtPushEvent({ file: null, status: "info", detail: `Real-time monitoring started (fswatch, ${dirs.length} dirs)`, ts: Date.now() });
+      return { ok: true, method: "fswatch", dirs };
+    }
+    // fallback to node watcher
+  }
+
+  if (pl === "linux") {
+    const child = rtStartInotifywait(dirs);
+    if (child) {
+      realtimeState.running = true;
+      realtimeState.method = "inotifywait";
+      realtimeState.child = child;
+      realtimeState.pid = child.pid;
+      rtPushEvent({ file: null, status: "info", detail: `Real-time monitoring started (inotifywait, ${dirs.length} dirs)`, ts: Date.now() });
+      return { ok: true, method: "inotifywait", dirs };
+    }
+  }
+
+  // Universal fallback: Node.js fs.watch
+  const ok = rtStartNodeWatch(dirs);
+  if (ok) {
+    realtimeState.running = true;
+    realtimeState.method = "node-fswatch";
+    realtimeState.child = null;
+    realtimeState.pid = null;
+    rtPushEvent({ file: null, status: "info", detail: `Real-time monitoring started (Node.js watcher, ${dirs.length} dirs)`, ts: Date.now() });
+    return { ok: true, method: "node-fswatch", dirs };
+  }
+
+  return { ok: false, error: "No file watching backend available" };
+}
+
+function rtStop() {
+  if (!realtimeState.running && !realtimeState.child && nodeWatchers.length === 0) {
+    return { ok: false, error: "Not running" };
+  }
+
+  if (realtimeState.child) {
+    try { realtimeState.child.kill("SIGTERM"); } catch { /* ignore */ }
+    realtimeState.child = null;
+  }
+  rtStopNodeWatchers();
+
+  realtimeState.running = false;
+  realtimeState.pid = null;
+  realtimeState.scanQueue = [];
+
+  rtPushEvent({ file: null, status: "info", detail: "Real-time monitoring stopped", ts: Date.now() });
+
+  for (const client of realtimeState.sseClients) {
+    try { client.write(`data: ${JSON.stringify({ type: "stopped" })}\n\n`); client.end(); } catch { /* ignore */ }
+  }
+  realtimeState.sseClients.clear();
+
+  return { ok: true };
+}
+
 // --- API ---
 
 app.get("/api/install/status", async (_req, res) => {
@@ -2098,6 +2463,7 @@ app.get("/api/health", async (_req, res) => {
       socketOk: daemonResponding,
     },
     realtimeProtection: realtime,
+    realtimeMonitor: rtSnapshot(),
     paths: {
       clamdConf: CLAMD_CONF,
       freshclamConf: FRESHCLAM_CONF,
@@ -2814,8 +3180,51 @@ app.delete("/api/cron/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-app.use(express.static(clientDist));
+// ─── Real-time monitoring API ─────────────────────────────────────────────────
+
+app.get("/api/realtime/status", (_req, res) => {
+  res.json(rtSnapshot());
+});
+
+app.post("/api/realtime/start", (req, res) => {
+  const dirs = req.body?.dirs;
+  const r = rtStart(Array.isArray(dirs) && dirs.length ? dirs : undefined);
+  res.json(r);
+});
+
+app.post("/api/realtime/stop", (_req, res) => {
+  const r = rtStop();
+  res.json(r);
+});
+
+app.get("/api/realtime/events", (_req, res) => {
+  res.json({ events: realtimeState.events });
+});
+
+app.get("/api/realtime/stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(`data: ${JSON.stringify({ type: "snapshot", ...rtSnapshot() })}\n\n`);
+  realtimeState.sseClients.add(res);
+  req.on("close", () => { realtimeState.sseClients.delete(res); });
+});
+
+app.use(
+  express.static(clientDist, {
+    etag: false,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      }
+    },
+  }),
+);
 app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.sendFile(path.join(clientDist, "index.html"));
 });
 

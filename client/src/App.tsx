@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyGuidedValues, guideFieldsFor, parseGuidedValues } from "./clamavConfigGuide";
+import { applyGuidedValues, guideFieldsFor, parseGuidedValues, type GuideField } from "./clamavConfigGuide";
 
 type Health = {
   ok: boolean;
@@ -17,7 +17,16 @@ type Health = {
     method: string;
     socketOk: boolean;
   };
-  realtimeProtection?: { available: boolean; running: boolean; detail?: string; unit?: string };
+  realtimeMonitor?: {
+    running: boolean;
+    method: string | null;
+    watchedDirs: string[];
+    filesScanned: number;
+    threatsFound: number;
+    lastEvent: RtEvent | null;
+    startedAt: number | null;
+    error: string | null;
+  };
   paths: {
     clamdConf: string;
     freshclamConf: string;
@@ -67,6 +76,13 @@ export type TerminalLogEntry = {
   via?: string;
   elevated?: boolean;
   brewUsedAdminRetry?: boolean;
+};
+
+type RtEvent = {
+  file: string | null;
+  status: "clean" | "threat" | "error" | "scanning" | "info";
+  detail: string | null;
+  ts: number;
 };
 
 const api = (path: string, init?: RequestInit) => fetch(path, init);
@@ -121,33 +137,9 @@ function TerminalOutputPanel({ logs }: { logs: TerminalLogEntry[] }) {
   );
 }
 
-function PrivilegeBanner() {
-  return (
-    <div
-      className="card"
-      style={{
-        marginBottom: "0.9rem",
-        padding: "0.65rem 0.95rem",
-        fontSize: "0.82rem",
-        lineHeight: 1.45,
-        borderColor: "var(--border)",
-        background: "var(--surface2)",
-      }}
-      role="note"
-    >
-      <strong>Passwords and privileges:</strong> Homebrew is <strong>never</strong> started with{" "}
-      <code>sudo brew</code>. Each <code>brew</code> command runs as <em>your user</em> first. If macOS reports
-      a permission error, the app shows the <strong>administrator password</strong> dialog for a single retry.
-      For <strong>service start/stop</strong>, the retry uses <code>launchctl</code> (not <code>sudo brew</code>)
-      to load a system LaunchDaemon — this avoids Homebrew taking root ownership of Cellar paths. Linux{" "}
-      <code>systemctl</code> runs as your user first, then <code>pkexec</code> only after a permission failure.
-      Windows may show UAC. <strong>freshclam</strong> definition updates follow the same user-first pattern.
-    </div>
-  );
-}
-
 const TABS = [
   ["home", "Dashboard", "📊", "See what is working and refresh ClamAV"],
+  ["realtime", "Real-time", "🛡️", "Monitor files in real time"],
   ["auto-install", "Auto-install", "📦", "Install ClamAV — guided on Mac + Homebrew"],
   ["scan", "Scan", "🔎", "Scan files with live progress"],
   ["quarantine", "Quarantine", "🔒", "View and manage quarantined threats"],
@@ -204,10 +196,7 @@ export default function App() {
           </div>
           <div>
             <h1>ClamAV Control</h1>
-            <p className="subtitle">
-              A simple panel for ClamAV on your computer: status, definition updates, config files, scans, and
-              schedules (where supported).
-            </p>
+            <p className="subtitle">Antivirus dashboard for your computer</p>
           </div>
         </div>
       </header>
@@ -232,8 +221,6 @@ export default function App() {
         </nav>
       </div>
 
-      <PrivilegeBanner />
-
       {err && (
         <div className="card card-error" role="alert">
           <h2 style={{ color: "var(--danger)", marginBottom: "0.5rem" }}>Cannot reach the app</h2>
@@ -246,6 +233,7 @@ export default function App() {
 
       <div className="panel-wrap" key={tab === "scan" ? "scan-persistent" : tab}>
         {tab === "home" && <Dashboard health={health} loading={loading} onRefresh={refresh} />}
+        {tab === "realtime" && <RealtimePanel health={health} onRefresh={refresh} />}
         {tab === "auto-install" && <AutoInstallPanel health={health} onRefreshAll={refresh} />}
         {tab === "quarantine" && <QuarantinePanel />}
         {tab === "cron" && <CronPanel />}
@@ -409,7 +397,7 @@ function Dashboard({
       if (j.ok) {
         setSvcBanner({
           ok: true,
-          text: `Command succeeded (${j.method ?? "?"}${j.unit ? `: ${j.unit}` : ""}). Watching daemon status for ~30s — keep this tab open.`,
+          text: `Service command succeeded.`,
         });
         [0, 1500, 3000, 5000, 8000, 12000, 20000].forEach((ms) =>
           window.setTimeout(() => void onRefresh(true), ms),
@@ -417,36 +405,6 @@ function Dashboard({
       } else {
         const detail = [j.error, j.hint].filter(Boolean).join("\n\n");
         setSvcBanner({ ok: false, text: detail || "Start/stop failed (see log below)." });
-        void onRefresh(true);
-      }
-    } catch (e) {
-      setLog(String(e));
-      setSvcBanner({ ok: false, text: String(e) });
-      void onRefresh(true);
-    } finally {
-      setSvcBusy(false);
-    }
-  };
-
-  const realtimeAction = async (action: "start" | "stop") => {
-    setSvcBusy(true);
-    setSvcBanner(null);
-    setLog("");
-    setCmdLogs([]);
-    try {
-      const r = await api("/api/actions/realtime", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      const j = (await r.json()) as { ok?: boolean; error?: string; terminalLogs?: TerminalLogEntry[] };
-      setCmdLogs(Array.isArray(j.terminalLogs) ? j.terminalLogs : []);
-      if (j.ok) {
-        setSvcBanner({ ok: true, text: "Real-time service command succeeded." });
-        void onRefresh(true);
-        window.setTimeout(() => void onRefresh(true), 1500);
-      } else {
-        setSvcBanner({ ok: false, text: j.error || "Command failed." });
         void onRefresh(true);
       }
     } catch (e) {
@@ -486,7 +444,6 @@ function Dashboard({
   const c = health?.clamav;
   const fw = health?.firewall;
   const svc = health?.clamdService;
-  const rt = health?.realtimeProtection;
 
   const fwOk = fw?.active === true;
   const fwOff = fw?.active === false;
@@ -508,263 +465,125 @@ function Dashboard({
     .filter(Boolean)
     .join(" — ");
 
+  const allGreen = c?.freshclamInstalled && c?.clamdscanInstalled && daemonResponding;
+
   return (
-    <div className="card">
-      <p className="section-label">Overview</p>
-      <h2>Is ClamAV ready?</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Dashboard</h2>
       {loading && (
-        <>
-          <p className="hint" style={{ marginBottom: "0.75rem" }}>
+        <div style={{ padding: "2rem 0" }}>
+          <p className="hint">
             <span className="spinner-inline" aria-hidden />
             Checking your system…
           </p>
           <div className="skeleton-block" aria-hidden />
-        </>
+        </div>
       )}
       {!loading && health && (
         <>
           <div className="status-grid">
             <span className={`status-pill ${c?.freshclamInstalled ? "ok" : "bad"}`}>
               <span className="dot" aria-hidden />
-              Definition updater
+              Definitions
               <span className="status-pill-muted">freshclam</span>
             </span>
             <span className={`status-pill ${c?.clamdscanInstalled ? "ok" : "bad"}`}>
               <span className="dot" aria-hidden />
-              Scanner CLI
+              Scanner
               <span className="status-pill-muted">clamdscan</span>
             </span>
             <span className={`status-pill ${daemonPillClass}`} title={daemonPillTitle || undefined}>
               <span className="dot" aria-hidden />
-              Scanner daemon
-              <span className="status-pill-muted">{daemonPillLabel}</span>
+              Daemon
+              <span className="status-pill-muted">{daemonResponding ? "online" : "offline"}</span>
             </span>
-            <span
-              className={`status-pill ${fwOk ? "ok" : fwOff ? "bad" : "wait"}`}
-              title={fw?.detail}
-            >
+            <span className={`status-pill ${fwOk ? "ok" : fwOff ? "bad" : "wait"}`} title={fw?.detail}>
               <span className="dot" aria-hidden />
               Firewall
               <span className="status-pill-muted">
-                {fwOk ? "on" : fwOff ? "off" : fwUnknown ? "unknown" : "—"}
+                {fwOk ? "on" : fwOff ? "off" : "unknown"}
               </span>
             </span>
-            <span
-              className={`status-pill ${rt?.running ? "ok" : rt?.available ? "bad" : "wait"}`}
-              title={rt?.detail}
-            >
+            <span className={`status-pill ${health.realtimeMonitor?.running ? "ok" : "wait"}`}>
               <span className="dot" aria-hidden />
               Real-time
-              <span className="status-pill-muted">
-                {rt?.running ? "on" : rt?.available ? "off" : "n/a"}
-              </span>
+              <span className="status-pill-muted">{health.realtimeMonitor?.running ? "active" : "off"}</span>
             </span>
           </div>
-          <p className="section-label">Firewall</p>
-          <p className="hint" style={{ marginBottom: "0.65rem" }}>
-            <strong>{fw?.source || "System firewall"}:</strong>{" "}
-            {fwOk ? "Enabled" : fwOff ? "Disabled" : "Unknown"}
-            {fw?.detail ? ` — ${fw.detail}` : ""}
-          </p>
-          <div className="action-grid" style={{ marginBottom: "1rem" }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={svcBusy || !!busy || fwOk}
-              onClick={() => void firewallAction("on")}
-            >
-              ▶ Enable firewall
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={svcBusy || !!busy || fwOff}
-              onClick={() => void firewallAction("off")}
-            >
-              ■ Disable firewall
-            </button>
-          </div>
 
-          <p className="section-label">Scanner daemon</p>
-          <p className="hint" style={{ marginBottom: "0.65rem" }}>
-            Service:{" "}
-            <strong>{svc?.running ? `running (${svc.unit || svc.method})` : "not running"}</strong>
-            {" · "}
-            Daemon ping:{" "}
-            <strong>{daemonResponding ? "OK" : "no response"}</strong>
-            {health.paths.clamdUnixSocket && (
-              <>
-                <br />
-                Socket used for ping/scan: <code>{health.paths.clamdUnixSocket}</code>
-              </>
-            )}
-            {!daemonResponding && c?.pingError && (
-              <>
-                <br />
-                <span style={{ color: "var(--danger)" }}>Detail: {c.pingError}</span>
-              </>
-            )}
-            <br />
-            <strong>macOS (Homebrew):</strong> start/stop uses <code>brew services</code> as <em>your user</em> only
-            — no <code>sudo brew</code>. <strong>Linux:</strong> <code>pkexec</code> may ask for your password for{" "}
-            <code>systemctl</code>. <strong>Windows:</strong> UAC may appear for <code>net start</code> /{" "}
-            <code>net stop</code>.
-          </p>
-          {svcBusy && (
-            <p className="hint" style={{ marginBottom: "0.65rem" }}>
-              <span className="spinner-inline" aria-hidden />
-              Running system command — wait for it to finish. If a password dialog appears (macOS admin,
-              Linux pkexec, Windows UAC), approve it; the app retries with privilege only when needed.
-            </p>
-          )}
-          {svcBanner && (
-            <div
-              className="svc-action-banner"
-              role="status"
-              style={{
-                marginBottom: "0.85rem",
-                padding: "0.75rem 0.9rem",
-                borderRadius: 10,
-                fontSize: "0.82rem",
-                lineHeight: 1.5,
-                whiteSpace: "pre-wrap",
-                border: `1px solid ${svcBanner.ok ? "rgba(61, 217, 160, 0.45)" : "rgba(224, 93, 93, 0.5)"}`,
-                background: svcBanner.ok ? "rgba(61, 217, 160, 0.1)" : "rgba(224, 93, 93, 0.1)",
-                color: svcBanner.ok ? "#9ff5d2" : "#ffb4b4",
-              }}
-            >
-              {svcBanner.ok ? "✓ " : "✕ "}
-              {svcBanner.text}
+          {allGreen && (
+            <div className="success-banner fade-in">
+              All systems operational — ClamAV is ready.
             </div>
           )}
-          <div className="action-grid" style={{ marginBottom: "1rem" }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={svcBusy || !!busy}
-              onClick={() => void clamdServiceAction("start")}
-            >
-              ▶ Start daemon
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={svcBusy || !!busy}
-              onClick={() => void clamdServiceAction("stop")}
-            >
-              ■ Stop daemon
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={svcBusy || !!busy}
-              onClick={() => void clamdServiceAction("restart")}
-            >
-              ⟳ Restart (service)
-            </button>
-          </div>
 
-          <p className="section-label">Real-time protection</p>
-          {rt?.available ? (
-            <>
-              <p className="hint" style={{ marginBottom: "0.65rem" }}>
-                On-access scanning (<code>clamonacc</code>):{" "}
-                <strong>{rt.running ? "Running" : "Stopped"}</strong>
-                {rt.detail ? ` — ${rt.detail}` : ""}
-              </p>
-              <div className="action-grid" style={{ marginBottom: "1rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={svcBusy || !!busy || rt.running}
-                  onClick={() => realtimeAction("start")}
-                >
-                  ▶ Turn on
+          {svcBanner && (
+            <div className={`action-banner fade-in ${svcBanner.ok ? "ok" : "err"}`} role="status">
+              {svcBanner.ok ? "✓ " : "✕ "}{svcBanner.text}
+            </div>
+          )}
+
+          {(svcBusy || busy) && (
+            <p className="hint" style={{ margin: "0.5rem 0" }}>
+              <span className="spinner-inline" aria-hidden />
+              {svcBusy ? "Running command…" : busy}
+            </p>
+          )}
+
+          <div className="dashboard-sections">
+            <div className="dash-section">
+              <p className="section-label">Firewall</p>
+              <div className="action-grid">
+                <button type="button" className="btn btn-primary" disabled={svcBusy || !!busy || fwOk} onClick={() => void firewallAction("on")}>
+                  Enable
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={svcBusy || !!busy || !rt.running}
-                  onClick={() => realtimeAction("stop")}
-                >
-                  ■ Turn off
+                <button type="button" className="btn btn-ghost" disabled={svcBusy || !!busy || fwOff} onClick={() => void firewallAction("off")}>
+                  Disable
                 </button>
               </div>
-            </>
-          ) : (
-            <p className="hint" style={{ marginBottom: "0.85rem" }}>
-              {rt?.detail || "On-access scanning (clamonacc) is not available on this platform."}{" "}
-              Use scheduled scans from the Scan tab instead.
-            </p>
-          )}
+            </div>
 
-          <div className="steps">
-            <div className="step-card">
-              <div className="step-num">1</div>
-              <strong>Install ClamAV</strong>
-              Use Homebrew, your Linux packages, or the Windows installer so the tools above show green.
+            <div className="dash-section">
+              <p className="section-label">Scanner daemon</p>
+              <div className="action-grid">
+                <button type="button" className="btn btn-primary" disabled={svcBusy || !!busy} onClick={() => void clamdServiceAction("start")}>
+                  Start
+                </button>
+                <button type="button" className="btn btn-ghost" disabled={svcBusy || !!busy} onClick={() => void clamdServiceAction("stop")}>
+                  Stop
+                </button>
+                <button type="button" className="btn btn-ghost" disabled={svcBusy || !!busy} onClick={() => void clamdServiceAction("restart")}>
+                  Restart
+                </button>
+              </div>
             </div>
-            <div className="step-card">
-              <div className="step-num">2</div>
-              <strong>Add files to scan</strong>
-              Copy them into your scan folder (path below). The app creates it if needed.
-            </div>
-            <div className="step-card">
-              <div className="step-num">3</div>
-              <strong>Use Scan and Config</strong>
-              Run scans from the Scan tab or tweak configs when you know what you are changing.
+
+            <div className="dash-section">
+              <p className="section-label">Quick actions</p>
+              <div className="action-grid">
+                <button type="button" className="btn btn-primary" disabled={!!busy || defStreaming} onClick={() => void onRefresh(true)}>
+                  ↻ Refresh
+                </button>
+                <button type="button" className="btn btn-ghost" disabled={!!busy || defStreaming} onClick={runFreshclam}>
+                  ⬇ Update definitions
+                </button>
+                <button type="button" className="btn btn-ghost" disabled={!!busy || defStreaming} onClick={restartClamd}>
+                  ⟳ Restart daemon
+                </button>
+              </div>
             </div>
           </div>
 
-          <p className="hint" style={{ marginBottom: "0.65rem" }}>
-            <strong>Your scan folder</strong>
-          </p>
-          <div className="path-chip">{health.paths.scanRoot}</div>
-
-          <p className="section-label" style={{ marginTop: "1.15rem" }}>
-            Actions
-          </p>
-          <div className="action-grid">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!!busy || defStreaming}
-              onClick={() => void onRefresh(true)}
-            >
-              {busy && !defStreaming ? (
-                <>
-                  <span className="spinner-inline" aria-hidden />
-                  Working…
-                </>
-              ) : (
-                "↻ Refresh status"
-              )}
-            </button>
-            <button type="button" className="btn btn-ghost" disabled={!!busy || defStreaming} onClick={runFreshclam}>
-              ⬇ Update definitions now
-            </button>
-            <button type="button" className="btn btn-ghost" disabled={!!busy || defStreaming} onClick={restartClamd}>
-              ⟳ Restart daemon (legacy)
-            </button>
-          </div>
           {defStreaming && (
-            <div className="scan-progress-wrap" style={{ marginTop: "1rem" }}>
+            <div className="scan-progress-wrap fade-in" style={{ marginTop: "1rem" }}>
               <div className="scan-progress-meta">
-                <span>
-                  <strong>{defProgress}%</strong> definitions
-                </span>
-                <span>Downloading / updating…</span>
+                <span><strong>{defProgress}%</strong></span>
+                <span>Updating definitions…</span>
               </div>
               <div className="scan-progress-track">
                 <div className="scan-progress-fill" style={{ width: `${defProgress}%` }} />
               </div>
             </div>
-          )}
-          {busy && (
-            <p className="hint">
-              <span className="spinner-inline" aria-hidden />
-              {busy}
-            </p>
           )}
           <TerminalOutputPanel logs={cmdLogs} />
           {log && (
@@ -773,6 +592,90 @@ function Dashboard({
             </pre>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+const CUSTOM_SENTINEL = "__custom__";
+const EMPTY_SENTINEL = "__empty__";
+
+function GuidedFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: GuideField;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const opts = field.options ?? [];
+  const hasOptions = opts.length > 0;
+  const isPreset = hasOptions && opts.includes(value);
+  const isCustom = !isPreset && value !== "";
+  const [customMode, setCustomMode] = useState(isCustom);
+
+  useEffect(() => {
+    if (value === "" || opts.includes(value)) {
+      setCustomMode(false);
+    } else if (value !== "") {
+      setCustomMode(true);
+    }
+  }, [value, opts]);
+
+  if (!hasOptions) {
+    return (
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={`${field.key} …`}
+        spellCheck={false}
+      />
+    );
+  }
+
+  const handleSelect = (v: string) => {
+    if (v === CUSTOM_SENTINEL) {
+      setCustomMode(true);
+      return;
+    }
+    if (v === EMPTY_SENTINEL) {
+      onChange("");
+      setCustomMode(false);
+      return;
+    }
+    onChange(v);
+    setCustomMode(false);
+  };
+
+  const selectValue = customMode ? CUSTOM_SENTINEL : value === "" ? EMPTY_SENTINEL : value;
+
+  return (
+    <div className="guided-input-combo">
+      <select
+        value={selectValue}
+        onChange={(e) => handleSelect(e.target.value)}
+        className="guided-select"
+      >
+        <option value={EMPTY_SENTINEL}>— not set —</option>
+        {opts.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+        <option value={CUSTOM_SENTINEL}>Custom…</option>
+      </select>
+      {customMode && (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Enter custom value…"
+          spellCheck={false}
+          className="guided-custom-input"
+          autoFocus
+        />
       )}
     </div>
   );
@@ -835,7 +738,7 @@ function ConfigPanel() {
       if (!r.ok) throw new Error(await r.text());
       setContent(bodyContent);
       setGuidedValues(parseGuidedValues(bodyContent, fields));
-      setMsg("Saved. If you edited the scanner daemon, use Restart daemon on the Dashboard.");
+      setMsg("Saved. Restart the daemon from the Dashboard to apply changes.");
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -846,7 +749,7 @@ function ConfigPanel() {
   const resetToDefaults = async () => {
     if (
       !window.confirm(
-        "Reset clamd.conf and freshclam.conf to the app's built-in starter templates? Timestamped .bak copies are created like a normal save. Paths in the templates are Linux-style -- adjust them for your OS (see Instructions).",
+        "Reset both config files to defaults? .bak backups are created automatically.",
       )
     ) {
       return;
@@ -862,7 +765,7 @@ function ConfigPanel() {
       if (!r.ok) throw new Error(await r.text());
       await load();
       setEditorMode("raw");
-      setMsg("Reset complete. Review paths in Raw mode, then restart the daemon from the Dashboard.");
+      setMsg("Reset complete. Review paths, then restart the daemon.");
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -871,13 +774,10 @@ function ConfigPanel() {
   };
 
   return (
-    <div className="card">
-      <p className="section-label">Configuration</p>
-      <h2>ClamAV settings</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Configuration</h2>
       <p className="hint" style={{ marginBottom: "1rem" }}>
-        Use <strong>Guided</strong> for common options with short explanations, or <strong>Raw</strong> for the
-        full file. Each save writes a timestamped <code>.bak</code>. Lines not covered by Guided stay as-is
-        until you edit them in Raw.
+        Edit ClamAV settings. Each save creates a <code>.bak</code> backup.
       </p>
 
       <div className="segmented" role="tablist" aria-label="Config file">
@@ -951,15 +851,12 @@ function ConfigPanel() {
           <div className="guided-stack">
             {fields.map((f) => (
               <div key={f.key} className="guided-field">
-                <label htmlFor={`g-${f.key}`}>{f.label}</label>
+                <label>{f.label}</label>
                 <p className="field-hint-text">{f.hint}</p>
-                <input
-                  id={`g-${f.key}`}
-                  type="text"
+                <GuidedFieldInput
+                  field={f}
                   value={guidedValues[f.key] ?? ""}
-                  onChange={(e) => setGuidedValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                  placeholder={`${f.key} …`}
-                  spellCheck={false}
+                  onChange={(v) => setGuidedValues((prev) => ({ ...prev, [f.key]: v }))}
                 />
               </div>
             ))}
@@ -1208,70 +1105,69 @@ function ScanPanel({
           : "";
 
   return (
-    <div className="card">
-      <p className="section-label">Scan</p>
-      <h2>Virus scan</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Virus scan</h2>
 
       {!running && !finished && (
-        <>
+        <div className="fade-in">
           <div className="scan-mode-grid">
             <button
               type="button"
               className={`scan-mode-card ${mode === "quick" ? "selected" : ""}`}
               onClick={() => setMode("quick")}
             >
-              <strong>Standard scan</strong>
-              <span>Downloads, Documents, Desktop, …</span>
+              <span className="scan-mode-icon">🔎</span>
+              <strong>Standard</strong>
+              <span className="scan-mode-hint">Common user folders</span>
             </button>
             <button
               type="button"
               className={`scan-mode-card ${mode === "full" ? "selected" : ""}`}
               onClick={() => setMode("full")}
             >
+              <span className="scan-mode-icon">💽</span>
               <strong>Full system</strong>
-              <span>{scanMeta?.fullPath ?? "/"}</span>
+              <span className="scan-mode-hint">Entire disk</span>
             </button>
             <button
               type="button"
               className={`scan-mode-card ${mode === "custom" ? "selected" : ""}`}
               onClick={() => setMode("custom")}
             >
-              <strong>Custom path</strong>
-              <span>Choose a folder</span>
+              <span className="scan-mode-icon">📁</span>
+              <strong>Custom</strong>
+              <span className="scan-mode-hint">Pick a folder</span>
             </button>
           </div>
 
           {mode === "quick" && scanMeta?.quickDirs && (
-            <p className="hint" style={{ marginBottom: "0.65rem", fontSize: "0.8rem" }}>
-              Scans: {scanMeta.quickDirs.map((d) => d.split("/").pop()).join(", ")}
+            <p className="hint scan-dirs-hint">
+              {scanMeta.quickDirs.map((d) => d.split("/").pop()).join(" · ")}
             </p>
           )}
 
           {mode === "custom" && (
             <div style={{ marginBottom: "1rem" }}>
-              <label htmlFor="scanpath">Path</label>
               <input
                 id="scanpath"
                 type="text"
                 value={customPath}
                 onChange={(e) => setCustomPath(e.target.value)}
-                placeholder="/Users/you/Documents or relative path"
+                placeholder="/path/to/folder"
               />
             </div>
           )}
 
           {mode === "full" && (
             <div className="warning-banner" role="status" style={{ marginBottom: "1rem" }}>
-              Full system scan reads the entire disk. This is slow and may hit permission errors.
+              Scans the entire disk — may be slow and hit permission errors.
             </div>
           )}
-        </>
+        </div>
       )}
 
       {scanErr && (
-        <div className="warning-banner" role="alert" style={{ borderColor: "rgba(224,93,93,0.45)", background: "rgba(224,93,93,0.1)", color: "#ffb4b4", marginBottom: "1rem" }}>
-          {scanErr}
-        </div>
+        <div className="action-banner err" role="alert">{scanErr}</div>
       )}
 
       <div className="action-grid" style={{ marginBottom: "1rem" }}>
@@ -1333,7 +1229,7 @@ function ScanPanel({
             <>No threats found. {live.filesScanned.toLocaleString()} files scanned.</>
           )}
           {live.status === "completed" && live.infectedCount > 0 && (
-            <>{live.infectedCount} threat{live.infectedCount !== 1 ? "s" : ""} found and quarantined. {live.filesScanned.toLocaleString()} files scanned. Check the Quarantine tab to review.</>
+            <>{live.infectedCount} threat{live.infectedCount !== 1 ? "s" : ""} quarantined. {live.filesScanned.toLocaleString()} files scanned.</>
           )}
           {live.status === "error" && (
             <>{live.spawnError || `Scan failed (exit code ${live.exitCode}).`}</>
@@ -1392,15 +1288,15 @@ function autoInstallAvailabilityNote(st: InstallStatus): string {
     return "";
   }
   if (st.platform === "darwin") {
-    return "Automatic install is only available when Homebrew is available (for example /opt/homebrew/bin/brew or /usr/local/bin/brew, or brew on your PATH). Install Homebrew if needed, restart this app, and open this tab again. Until then, use the manual commands below.";
+    return "Requires Homebrew. Install it, then reopen this tab.";
   }
   if (st.platform === "linux") {
-    return "Automatic install is not available on Linux in this app. Install ClamAV with your distribution’s package manager using the terminal commands below (you may need sudo).";
+    return "Use your package manager (apt, dnf, etc.) — see commands below.";
   }
   if (st.platform === "win32") {
-    return "Automatic install is not available on Windows in this app. Download the official ClamAV build for Windows from https://www.clamav.net/downloads , run the installer, then restart this app.";
+    return "Download the installer from clamav.net/downloads.";
   }
-  return "Automatic install is not available on this operating system. Install ClamAV using vendor documentation, then use the Dashboard to confirm status.";
+  return "Install ClamAV manually, then check the Dashboard.";
 }
 
 function AutoInstallPanel({
@@ -1484,8 +1380,8 @@ function AutoInstallPanel({
   const runUninstall = async () => {
     const msg =
       st?.platform === "linux"
-        ? "Uninstall ClamAV using pkexec (you will be prompted for your password). Continue?"
-        : "Stop the service, remove the Homebrew formula, and clean up ClamAV files. Continue?";
+        ? "Uninstall ClamAV? You may be prompted for your password."
+        : "Uninstall ClamAV and remove all files?";
     if (!window.confirm(msg)) return;
     setUninstallBusy(true);
     setLog("");
@@ -1507,9 +1403,8 @@ function AutoInstallPanel({
 
   if (loading || !st) {
     return (
-      <div className="card">
-        <p className="section-label">Setup</p>
-        <h2>Auto-install</h2>
+      <div className="card fade-in">
+        <h2 style={{ marginBottom: "0.25rem" }}>Auto-install</h2>
         <p className="hint">{loading ? "Checking your system…" : "Could not load install status."}</p>
         {!loading && (
           <button type="button" className="btn btn-ghost" onClick={load}>
@@ -1533,13 +1428,10 @@ function AutoInstallPanel({
     (st.platform === "linux" || (st.platform === "darwin" && st.brew.clamavInstalled));
 
   return (
-    <div className="card">
-      <p className="section-label">Setup</p>
-      <h2>Auto-install</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Auto-install</h2>
       <p className="hint" style={{ marginBottom: "0.75rem" }}>
-        Guided install and daemon setup. On <strong>macOS with Homebrew</strong>, you can run the steps below
-        from this app. On other systems, this tab explains what is not automated and shows commands to run
-        yourself.
+        macOS with Homebrew: run all steps from this app. Other systems: see commands below.
       </p>
 
       {availabilityNote && (
@@ -1580,8 +1472,7 @@ function AutoInstallPanel({
 
       {ready && (
         <p className="hint" style={{ color: "var(--accent)", marginBottom: "1rem" }}>
-          ClamAV looks ready. Open the <strong>Dashboard</strong> tab and use <strong>Refresh status</strong> if
-          something still looks wrong.
+          ClamAV is ready. Check the <strong>Dashboard</strong> for status.
         </p>
       )}
 
@@ -1660,9 +1551,7 @@ function AutoInstallPanel({
         Uninstall
       </p>
       <p className="hint" style={{ marginBottom: "0.65rem" }}>
-        Removes ClamAV where supported. <code>brew</code> runs as your user first; a permission error on macOS
-        triggers one administrator retry. Linux tries package removal as your user, then <code>pkexec</code> if
-        needed. Do not use <code>sudo brew</code> by default in Terminal.
+        Remove ClamAV from your system.
       </p>
       {showAutomatedUninstall && (
         <div className="row" style={{ marginBottom: "0.85rem" }}>
@@ -1714,88 +1603,80 @@ function AutoInstallPanel({
 
 function InstructionsPanel() {
   return (
-    <div className="card">
-      <p className="section-label">Help</p>
-      <h2>Instructions</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Instructions &amp; About</h2>
       <p className="hint" style={{ marginBottom: "1rem" }}>
-        This app talks to ClamAV tools already installed on your computer. It does not replace a full security
-        suite; it helps you run <strong>clamd</strong>, <strong>freshclam</strong>, and scans from one place.
+        ClamAV Control is a GUI for the open-source ClamAV antivirus engine.
+        It manages scanning, definitions, quarantine, and scheduling from one place.
       </p>
 
-      <h2 style={{ fontSize: "0.95rem", marginTop: "1.25rem" }}>Official downloads & docs</h2>
-      <ul className="instructions-links">
-        <li>
-          <a href="https://www.clamav.net/downloads" target="_blank" rel="noreferrer">
-            ClamAV downloads
-          </a>{" "}
-          — installers and source
-        </li>
-        <li>
-          <a href="https://docs.clamav.net/" target="_blank" rel="noreferrer">
-            ClamAV documentation
-          </a>{" "}
-          — install, configure, clamonacc
-        </li>
-      </ul>
+      <details className="help-section" open>
+        <summary>Getting started</summary>
+        <div className="help-body">
+          <ol className="instructions-steps">
+            <li><strong>Install ClamAV</strong> — use the Auto-install tab (macOS / Homebrew) or your OS package manager.</li>
+            <li><strong>Check the Dashboard</strong> — all indicators should be green.</li>
+            <li><strong>Update definitions</strong> — click “Update definitions” to fetch the latest signatures.</li>
+            <li><strong>Run a scan</strong> — go to Scan, pick Standard / Full / Custom, and start.</li>
+          </ol>
+        </div>
+      </details>
 
-      <h2 style={{ fontSize: "0.95rem", marginTop: "1.25rem" }}>Install by operating system</h2>
-      <div className="instructions-os">
-        <section>
-          <h3>macOS</h3>
-          <p>
-            Use the <strong>Auto-install</strong> tab for guided Homebrew steps when available. Or install with{" "}
-            <a href="https://brew.sh" target="_blank" rel="noreferrer">
-              Homebrew
-            </a>
-            : <code>brew install clamav</code>, then <code>brew services start clamav</code>. Config paths in{" "}
-            <strong>Config</strong> should match Homebrew’s <code>/opt/homebrew/etc/clamav</code> or{" "}
-            <code>/usr/local/etc/clamav</code>.
-          </p>
-        </section>
-        <section>
-          <h3>Windows</h3>
-          <p>
-            Use the official ClamAV Windows installer from the downloads page. After install, open this app’s{" "}
-            <strong>Dashboard</strong> to confirm <strong>freshclam</strong> and <strong>clamdscan</strong> show
-            as installed. Use <strong>Start daemon</strong> if the service is stopped (may need Administrator).
-            Schedules use <strong>Task Scheduler</strong> on Windows.
-          </p>
-        </section>
-        <section>
-          <h3>Linux</h3>
-          <p>
-            Install with your package manager (e.g. <code>apt install clamav clamav-daemon</code> on Debian/Ubuntu).
-            Enable <code>clamav-daemon</code> with systemd. Optional on-access scanning uses{" "}
-            <code>clamonacc</code> — if your distro ships it, the Dashboard may show <strong>Real-time protection</strong>{" "}
-            controls.
-          </p>
-        </section>
-      </div>
+      <details className="help-section">
+        <summary>Install by operating system</summary>
+        <div className="help-body">
+          <div className="instructions-os">
+            <section>
+              <h3>macOS</h3>
+              <p>Use the <strong>Auto-install</strong> tab or manually: <code>brew install clamav</code> then <code>brew services start clamav</code>.</p>
+            </section>
+            <section>
+              <h3>Windows</h3>
+              <p>Download the installer from <a href="https://www.clamav.net/downloads" target="_blank" rel="noreferrer">clamav.net</a>. Use the Dashboard to start the daemon.</p>
+            </section>
+            <section>
+              <h3>Linux</h3>
+              <p><code>apt install clamav clamav-daemon</code> or equivalent. Real-time scanning via <code>clamonacc</code> may be available.</p>
+            </section>
+          </div>
+        </div>
+      </details>
 
-      <h2 style={{ fontSize: "0.95rem", marginTop: "1.25rem" }}>Using this app</h2>
-      <ol className="instructions-steps">
-        <li>
-          <strong>Auto-install</strong> — On Mac with Homebrew, install ClamAV, apply daemon socket config, fetch
-          definitions, and start the service from one place; uninstall is on the same tab. Linux can uninstall via{" "}
-          <code>pkexec</code> (password). Never use <code>sudo brew</code>.
-        </li>
-        <li>
-          <strong>Dashboard</strong> — Check tools, firewall summary, start/stop the scanner daemon (Linux:{" "}
-          <code>pkexec</code> password; Windows: UAC; macOS Homebrew: no <code>sudo brew</code>), download
-          definitions (progress bar), and see your scan folder path.
-        </li>
-        <li>
-          <strong>Scan</strong> — Pick quick, full, or custom path; watch the progress bar and current file; cancel
-          if needed. Recent runs are listed from saved history.
-        </li>
-        <li>
-          <strong>Schedules</strong> — On macOS/Linux, add cron jobs for freshclam or clamdscan.
-        </li>
-        <li>
-          <strong>Config</strong> — Guided fields or full raw files; in Raw mode you can <strong>Reset files to default</strong>{" "}
-          (starter templates — edit paths afterward).
-        </li>
-      </ol>
+      <details className="help-section">
+        <summary>App tabs explained</summary>
+        <div className="help-body">
+          <dl className="tab-explainer">
+            <dt>Dashboard</dt><dd>Status overview. Start/stop daemon, update definitions, toggle firewall.</dd>
+            <dt>Auto-install</dt><dd>One-click install/uninstall on macOS. Manual commands for other platforms.</dd>
+            <dt>Scan</dt><dd>Standard, Full, or Custom scan with live file log. Threats are auto-quarantined.</dd>
+            <dt>Quarantine</dt><dd>Review, restore, or delete quarantined files.</dd>
+            <dt>Schedules</dt><dd>Cron jobs for automatic updates and scans (macOS/Linux).</dd>
+            <dt>Config</dt><dd>Edit ClamAV config files in Guided or Raw mode.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details className="help-section">
+        <summary>Passwords &amp; privileges</summary>
+        <div className="help-body">
+          <p>Commands run as your user first. On permission error, the app retries with elevation:</p>
+          <ul>
+            <li><strong>macOS</strong> — admin password dialog (never <code>sudo brew</code>).</li>
+            <li><strong>Linux</strong> — <code>pkexec</code> prompt.</li>
+            <li><strong>Windows</strong> — UAC elevation.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details className="help-section">
+        <summary>Official resources</summary>
+        <div className="help-body">
+          <ul className="instructions-links">
+            <li><a href="https://www.clamav.net/downloads" target="_blank" rel="noreferrer">ClamAV downloads</a></li>
+            <li><a href="https://docs.clamav.net/" target="_blank" rel="noreferrer">ClamAV documentation</a></li>
+          </ul>
+        </div>
+      </details>
     </div>
   );
 }
@@ -1937,12 +1818,10 @@ function QuarantinePanel() {
   };
 
   return (
-    <div className="card">
-      <p className="section-label">Quarantine</p>
-      <h2>Quarantined threats</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Quarantine</h2>
       <p className="hint" style={{ marginBottom: "0.75rem" }}>
-        When a scan finds malware, the infected file is automatically moved here.
-        You can permanently delete it or restore it if you believe it is a false positive.
+        Infected files are moved here automatically. Delete or restore as needed.
         {dir && (
           <>
             <br />
@@ -1952,19 +1831,7 @@ function QuarantinePanel() {
       </p>
 
       {msg && (
-        <div
-          className="svc-action-banner"
-          role="status"
-          style={{
-            marginBottom: "0.85rem",
-            padding: "0.6rem 0.85rem",
-            borderRadius: 10,
-            fontSize: "0.82rem",
-            border: `1px solid ${msg.ok ? "rgba(61,217,160,0.45)" : "rgba(224,93,93,0.5)"}`,
-            background: msg.ok ? "rgba(61,217,160,0.1)" : "rgba(224,93,93,0.1)",
-            color: msg.ok ? "#9ff5d2" : "#ffb4b4",
-          }}
-        >
+        <div className={`action-banner fade-in ${msg.ok ? "ok" : "err"}`} role="status">
           {msg.ok ? "✓ " : "✕ "}{msg.text}
         </div>
       )}
@@ -1990,7 +1857,7 @@ function QuarantinePanel() {
       {!loading && items.length === 0 && (
         <div className="quarantine-empty">
           <p style={{ textAlign: "center", color: "var(--muted)", padding: "2rem 0" }}>
-            No quarantined files. Threats found during scans will appear here.
+            No quarantined files.
           </p>
         </div>
       )}
@@ -2027,6 +1894,241 @@ function QuarantinePanel() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RealtimePanel({
+  health,
+  onRefresh,
+}: {
+  health: Health | null;
+  onRefresh: (silent?: boolean) => void | Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [events, setEvents] = useState<RtEvent[]>([]);
+  const [status, setStatus] = useState(health?.realtimeMonitor ?? null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+  const esRef = useRef<EventSource | null>(null);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const r = await api("/api/realtime/status");
+      if (r.ok) {
+        const s = await r.json();
+        setStatus(s);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { void fetchStatus(); }, [fetchStatus]);
+
+  useEffect(() => {
+    if (health?.realtimeMonitor) setStatus(health.realtimeMonitor);
+  }, [health?.realtimeMonitor]);
+
+  const connectStream = useCallback(() => {
+    esRef.current?.close();
+    const es = new EventSource("/api/realtime/stream");
+    esRef.current = es;
+    es.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === "snapshot") {
+          setStatus(m);
+          return;
+        }
+        if (m.type === "stopped") {
+          void fetchStatus();
+          return;
+        }
+        setEvents((prev) => {
+          const next = [...prev, m as RtEvent];
+          return next.length > 200 ? next.slice(-200) : next;
+        });
+        if (m.status === "threat") void onRefresh(true);
+      } catch { /* ignore */ }
+    };
+    es.onerror = () => {
+      es.close();
+      esRef.current = null;
+    };
+    return es;
+  }, [fetchStatus, onRefresh]);
+
+  useEffect(() => {
+    if (status?.running) {
+      const es = connectStream();
+      return () => es.close();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.running]);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || !autoScrollRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [events]);
+
+  const handleScroll = () => {
+    const el = logRef.current;
+    if (!el) return;
+    autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+
+  const startMonitor = async () => {
+    setBusy(true);
+    setMsg(null);
+    setEvents([]);
+    try {
+      const r = await api("/api/realtime/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const j = await r.json();
+      if (j.ok) {
+        setMsg({ ok: true, text: `Monitoring started (${j.method})` });
+        void fetchStatus();
+        void onRefresh(true);
+      } else {
+        setMsg({ ok: false, text: j.error || "Failed to start" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopMonitor = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api("/api/realtime/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const j = await r.json();
+      if (j.ok) {
+        setMsg({ ok: true, text: "Monitoring stopped" });
+        esRef.current?.close();
+        esRef.current = null;
+        void fetchStatus();
+        void onRefresh(true);
+      } else {
+        setMsg({ ok: false, text: j.error || "Failed to stop" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const running = status?.running ?? false;
+  const method = status?.method ?? null;
+  const methodLabel: Record<string, string> = {
+    fswatch: "macOS fswatch (ESF)",
+    inotifywait: "Linux inotifywait",
+    "node-fswatch": "Node.js fs.watch",
+  };
+
+  return (
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Real-time monitoring</h2>
+      <p className="hint" style={{ marginBottom: "1rem" }}>
+        Watches your key folders for new or changed files and scans them instantly with ClamAV.
+        Threats are auto-quarantined.
+      </p>
+
+      <div className="rt-status-row">
+        <span className={`status-pill ${running ? "ok" : "wait"}`}>
+          <span className="dot" aria-hidden />
+          {running ? "Active" : "Inactive"}
+          {method && running && <span className="status-pill-muted">{methodLabel[method] ?? method}</span>}
+        </span>
+        {running && status && (
+          <>
+            <span className="rt-stat">{status.filesScanned.toLocaleString()} scanned</span>
+            <span className={`rt-stat ${status.threatsFound > 0 ? "rt-stat-threat" : ""}`}>
+              {status.threatsFound} threat{status.threatsFound !== 1 ? "s" : ""}
+            </span>
+            {status.startedAt && (
+              <span className="rt-stat rt-stat-muted">since {new Date(status.startedAt).toLocaleTimeString()}</span>
+            )}
+          </>
+        )}
+      </div>
+
+      {msg && (
+        <div className={`action-banner fade-in ${msg.ok ? "ok" : "err"}`} role="status">
+          {msg.ok ? "✓ " : "✕ "}{msg.text}
+        </div>
+      )}
+
+      {status?.error && !msg && (
+        <div className="action-banner fade-in err" role="alert">
+          ✕ {status.error}
+        </div>
+      )}
+
+      <div className="action-grid" style={{ marginBottom: "1rem" }}>
+        {!running && (
+          <button type="button" className="btn btn-primary" onClick={startMonitor} disabled={busy}>
+            {busy ? <><span className="spinner-inline" aria-hidden />Starting…</> : "▶ Start monitoring"}
+          </button>
+        )}
+        {running && (
+          <button type="button" className="btn btn-danger" onClick={stopMonitor} disabled={busy}>
+            ■ Stop monitoring
+          </button>
+        )}
+        <button type="button" className="btn btn-ghost" onClick={() => void fetchStatus()} disabled={busy}>
+          ↻ Refresh
+        </button>
+      </div>
+
+      {running && status?.watchedDirs && status.watchedDirs.length > 0 && (
+        <details className="help-section" style={{ marginBottom: "0.75rem" }}>
+          <summary>Watched folders ({status.watchedDirs.length})</summary>
+          <div className="help-body">
+            <div className="rt-dirs-list">
+              {status.watchedDirs.map((d) => (
+                <div key={d} className="path-chip">{d}</div>
+              ))}
+            </div>
+          </div>
+        </details>
+      )}
+
+      {(events.length > 0 || running) && (
+        <div className="rt-log" ref={logRef} onScroll={handleScroll}>
+          {events.length === 0 && running && (
+            <div className="scan-log-line scan-log-info">Waiting for file events…</div>
+          )}
+          {events.map((evt, i) => {
+            if (evt.status === "info") {
+              return <div key={i} className="scan-log-line scan-log-info">{evt.detail}</div>;
+            }
+            const cls =
+              evt.status === "threat" ? "scan-log-found"
+              : evt.status === "error" ? "scan-log-skip"
+              : evt.status === "scanning" ? "scan-log-info"
+              : "scan-log-ok";
+            const tag =
+              evt.status === "threat" ? "THREAT"
+              : evt.status === "error" ? "ERROR"
+              : evt.status === "scanning" ? "SCAN"
+              : "OK";
+            const fname = evt.file ? evt.file.split("/").pop() || evt.file : "";
+            return (
+              <div key={i} className={`scan-log-line ${cls}`} title={evt.file || undefined}>
+                <span className="scan-log-tag">{tag}</span>
+                <span className="scan-log-path">{fname}</span>
+                {evt.detail && <span className="scan-log-detail">{evt.detail}</span>}
+                <span className="rt-event-time">{new Date(evt.ts).toLocaleTimeString()}</span>
+              </div>
+            );
+          })}
+          {running && <div className="scan-log-cursor" />}
         </div>
       )}
     </div>
@@ -2104,11 +2206,10 @@ function CronPanel() {
 
   if (cronBlocked) {
     return (
-      <div className="card">
-        <p className="section-label">Schedules</p>
-        <h2>Windows — use Task Scheduler</h2>
+      <div className="card fade-in">
+        <h2 style={{ marginBottom: "0.25rem" }}>Schedules</h2>
         <p className="hint">
-          This app does not edit cron on Windows. Open <strong>Task Scheduler</strong> and create tasks that run{" "}
+          Cron is not available on Windows. Use <strong>Task Scheduler</strong> to run{" "}
           <code>freshclam</code> or <code>clamdscan</code> on a schedule. Use the Dashboard for one-off updates
           and scans.
         </p>
@@ -2117,9 +2218,8 @@ function CronPanel() {
   }
 
   return (
-    <div className="card">
-      <p className="section-label">Automation</p>
-      <h2>Timer scans (crontab)</h2>
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Schedules</h2>
 
       <div className={`schedule-status-banner ${jobs.length > 0 ? "has-jobs" : ""}`}>
         <div>
@@ -2129,17 +2229,15 @@ function CronPanel() {
         </div>
         <div className="label">
           {jobs.length === 0
-            ? "No timer scans are active in your user crontab. Add one below to schedule freshclam or clamdscan."
+            ? "No scheduled jobs. Add one below."
             : jobs.length === 1
-              ? "One scheduled job is active (shown below)."
-              : `${jobs.length} scheduled jobs are active (listed below).`}
+              ? "1 active job"
+              : `${jobs.length} active jobs`}
         </div>
       </div>
 
       <p className="hint" style={{ marginBottom: "1rem" }}>
-        Jobs run as <strong>you</strong> on this computer. Use five fields: minute, hour, day of month, month,
-        day of week. You may need <code>sudo</code> inside the command on some setups. Presets fill in your
-        current scan folder path.
+        Cron format: min hour dom month dow. Presets use your scan folder path.
       </p>
 
       <p className="section-label" style={{ marginTop: "0.5rem" }}>
