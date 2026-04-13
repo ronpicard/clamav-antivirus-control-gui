@@ -986,6 +986,140 @@ details.advanced summary {
   margin-bottom: 0.25rem;
 }
 
+/* Scan live log viewer */
+.scan-log-viewer {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #080c10;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.5rem 0;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  margin-bottom: 0.75rem;
+}
+
+.scan-log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 1px 0.75rem;
+  word-break: break-all;
+}
+
+.scan-log-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.scan-log-tag {
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  min-width: 3.2rem;
+  text-align: center;
+}
+
+.scan-log-ok .scan-log-tag {
+  color: #4ae8b0;
+  background: rgba(61, 217, 160, 0.1);
+}
+
+.scan-log-ok .scan-log-path {
+  color: #6b8294;
+}
+
+.scan-log-found .scan-log-tag {
+  color: #ff6b6b;
+  background: rgba(224, 93, 93, 0.18);
+  font-weight: 800;
+}
+
+.scan-log-found .scan-log-path {
+  color: #ffb4b4;
+}
+
+.scan-log-found {
+  background: rgba(224, 93, 93, 0.06);
+}
+
+.scan-log-detail {
+  color: #ff8a8a;
+  font-weight: 600;
+}
+
+.scan-log-skip .scan-log-tag {
+  color: #e6a23c;
+  background: rgba(230, 162, 60, 0.12);
+}
+
+.scan-log-skip .scan-log-path {
+  color: #c8a060;
+}
+
+.scan-log-info {
+  color: #5a7080;
+  font-style: italic;
+  padding: 2px 0.75rem;
+}
+
+.scan-log-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.scan-log-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--accent);
+  margin-left: 0.75rem;
+  margin-top: 2px;
+  animation: cursor-blink 1s step-end infinite;
+  border-radius: 1px;
+}
+
+@keyframes cursor-blink {
+  50% { opacity: 0; }
+}
+
+/* Summary banner after scan completes */
+.scan-summary-banner {
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--muted);
+}
+
+.scan-summary-clean {
+  border-color: rgba(61, 217, 160, 0.4);
+  background: rgba(61, 217, 160, 0.08);
+  color: #9ff5d2;
+}
+
+.scan-summary-threats {
+  border-color: rgba(224, 93, 93, 0.5);
+  background: rgba(224, 93, 93, 0.1);
+  color: #ffb4b4;
+}
+
+.scan-summary-error {
+  border-color: rgba(230, 162, 60, 0.5);
+  background: rgba(230, 162, 60, 0.1);
+  color: #ffd28a;
+}
+
 .history-list {
   list-style: none;
   padding: 0;

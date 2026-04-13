@@ -887,6 +887,12 @@ function ConfigPanel() {
 
 type ScanMode = "quick" | "full" | "custom";
 
+type ScanLine = {
+  file: string | null;
+  status: "ok" | "found" | "skip" | "info";
+  detail: string | null;
+};
+
 type ScanStreamState = {
   type?: string;
   status: string;
@@ -900,6 +906,7 @@ type ScanStreamState = {
   progressExact: boolean;
   currentFile: string;
   infectedCount: number;
+  scanLines?: ScanLine[];
   stdoutTail?: string;
   exitCode?: number | null;
   exitSignal?: string | null;
@@ -916,9 +923,64 @@ type ScanHistoryEntry = {
   infectedCount: number;
 };
 
+function ScanLogViewer({ lines, running }: { lines: ScanLine[]; running: boolean }) {
+  const logRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || !autoScrollRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
+  const handleScroll = () => {
+    const el = logRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    autoScrollRef.current = nearBottom;
+  };
+
+  if (lines.length === 0 && !running) return null;
+
+  return (
+    <div className="scan-log-viewer" ref={logRef} onScroll={handleScroll}>
+      {lines.length === 0 && running && (
+        <div className="scan-log-line scan-log-info">Waiting for scanner output...</div>
+      )}
+      {lines.map((l, i) => {
+        if (l.status === "info") {
+          return (
+            <div key={i} className="scan-log-line scan-log-info">
+              {l.detail}
+            </div>
+          );
+        }
+        const cls =
+          l.status === "found"
+            ? "scan-log-found"
+            : l.status === "skip"
+              ? "scan-log-skip"
+              : "scan-log-ok";
+        const tag =
+          l.status === "found" ? "THREAT" : l.status === "skip" ? "ERROR" : "OK";
+        return (
+          <div key={i} className={`scan-log-line ${cls}`}>
+            <span className="scan-log-tag">{tag}</span>
+            <span className="scan-log-path">{l.file}</span>
+            {l.status === "found" && l.detail && (
+              <span className="scan-log-detail">{l.detail}</span>
+            )}
+          </div>
+        );
+      })}
+      {running && <div className="scan-log-cursor" />}
+    </div>
+  );
+}
+
 function ScanPanel({ health }: { health: Health | null }) {
   const [mode, setMode] = useState<ScanMode>("quick");
-  const [path, setPath] = useState(".");
+  const [customPath, setCustomPath] = useState(".");
   const [pendingStart, setPendingStart] = useState(false);
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
   const [live, setLive] = useState<ScanStreamState | null>(null);
@@ -929,10 +991,13 @@ function ScanPanel({ health }: { health: Health | null }) {
 
   const scanRoot = health?.paths.scanRoot ?? "";
   const scanMeta = health?.scan;
+  const daemonUp = health?.clamav?.daemonResponding ?? false;
 
   const running =
     pendingStart ||
     !!(live && ["queued", "preparing", "running"].includes(live.status));
+
+  const finished = !running && live && ["completed", "cancelled", "error"].includes(live.status);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -1000,16 +1065,16 @@ function ScanPanel({ health }: { health: Health | null }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode,
-          path: mode === "custom" ? path : undefined,
+          path: mode === "custom" ? customPath : undefined,
         }),
       });
       const j = (await r.json()) as { scanId?: string; error?: string };
-      if (!r.ok) throw new Error(j.error || (await r.text()));
+      if (!r.ok) throw new Error(j.error || "Scan request failed");
       if (!j.scanId) throw new Error("No scan id returned");
       setActiveScanId(j.scanId);
-    } catch (e) {
+    } catch (e: unknown) {
       setPendingStart(false);
-      setScanErr(String(e));
+      setScanErr(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -1021,128 +1086,137 @@ function ScanPanel({ health }: { health: Health | null }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: activeScanId }),
       });
-    } catch (e) {
-      setScanErr(String(e));
+    } catch (e: unknown) {
+      setScanErr(e instanceof Error ? e.message : String(e));
     }
   };
 
   const progress = live?.progress ?? 0;
   const indeterminate = running && live && !live.progressExact && live.status !== "preparing";
-  const showBar = running || (live && ["completed", "cancelled", "error"].includes(live.status));
+  const showProgress = running || !!finished;
+  const scanLines = live?.scanLines ?? [];
+
+  const summaryStatusCls =
+    live?.status === "completed" && live.infectedCount === 0
+      ? "scan-summary-clean"
+      : live?.status === "completed" && live.infectedCount > 0
+        ? "scan-summary-threats"
+        : live?.status === "error"
+          ? "scan-summary-error"
+          : "";
 
   return (
     <div className="card">
       <p className="section-label">Scan</p>
-      <h2>Choose what to scan</h2>
-      <p className="hint" style={{ marginBottom: "1rem" }}>
-        Quick scan covers your app scan folder only. Full system scan starts from the volume root (slow, may
-        need permissions). Custom lets you type a subfolder under the scan folder or an absolute path under
-        your home directory. Progress updates live while <code>clamdscan</code> reports each file.
-      </p>
+      <h2>Virus scan</h2>
 
-      <div className="scan-mode-grid">
-        <button
-          type="button"
-          className={`scan-mode-card ${mode === "quick" ? "selected" : ""}`}
-          onClick={() => setMode("quick")}
-          disabled={running}
-        >
-          <strong>Quick scan</strong>
-          <span>Scan everything in your ClamAV scan folder ({scanRoot || "…"})</span>
-        </button>
-        <button
-          type="button"
-          className={`scan-mode-card ${mode === "full" ? "selected" : ""}`}
-          onClick={() => setMode("full")}
-          disabled={running}
-        >
-          <strong>Full system</strong>
-          <span>
-            Start at {scanMeta?.fullPath ?? "/"} — long-running; may hit permission errors on system paths
-          </span>
-        </button>
-        <button
-          type="button"
-          className={`scan-mode-card ${mode === "custom" ? "selected" : ""}`}
-          onClick={() => setMode("custom")}
-          disabled={running}
-        >
-          <strong>Custom folder</strong>
-          <span>Relative to scan folder, or absolute under your home / scan folder</span>
-        </button>
-      </div>
-
-      {mode === "full" && (
-        <div className="warning-banner" role="status">
-          Full scans read the entire disk starting at <code>{scanMeta?.fullPath ?? "/"}</code>. Expect heavy CPU
-          and disk use. Run as an admin or root if the OS blocks some directories.
+      {!daemonUp && !running && (
+        <div className="warning-banner" role="alert" style={{ marginBottom: "1rem" }}>
+          The ClamAV daemon (clamd) is not responding. Start it from the Dashboard tab before scanning.
         </div>
       )}
 
-      {mode === "custom" && (
+      {!running && !finished && (
         <>
-          <p className="hint" style={{ marginBottom: "0.5rem" }}>
-            {scanMeta?.customHint}
-          </p>
-          <label htmlFor="scanpath">Path</label>
-          <input
-            id="scanpath"
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder=". or Documents/myfiles or /Users/you/…"
-            style={{ marginBottom: "1rem" }}
-            disabled={running}
-          />
+          <div className="scan-mode-grid">
+            <button
+              type="button"
+              className={`scan-mode-card ${mode === "quick" ? "selected" : ""}`}
+              onClick={() => setMode("quick")}
+            >
+              <strong>Quick scan</strong>
+              <span>{scanRoot || "Scan folder"}</span>
+            </button>
+            <button
+              type="button"
+              className={`scan-mode-card ${mode === "full" ? "selected" : ""}`}
+              onClick={() => setMode("full")}
+            >
+              <strong>Full system</strong>
+              <span>{scanMeta?.fullPath ?? "/"}</span>
+            </button>
+            <button
+              type="button"
+              className={`scan-mode-card ${mode === "custom" ? "selected" : ""}`}
+              onClick={() => setMode("custom")}
+            >
+              <strong>Custom path</strong>
+              <span>Choose a folder</span>
+            </button>
+          </div>
+
+          {mode === "custom" && (
+            <div style={{ marginBottom: "1rem" }}>
+              <label htmlFor="scanpath">Path</label>
+              <input
+                id="scanpath"
+                type="text"
+                value={customPath}
+                onChange={(e) => setCustomPath(e.target.value)}
+                placeholder="/Users/you/Documents or relative path"
+              />
+            </div>
+          )}
+
+          {mode === "full" && (
+            <div className="warning-banner" role="status" style={{ marginBottom: "1rem" }}>
+              Full system scan reads the entire disk. This is slow and may hit permission errors.
+            </div>
+          )}
         </>
       )}
 
-      {mode === "quick" && (
-        <div className="path-chip" style={{ marginBottom: "1rem" }}>
-          Target: {scanMeta?.quickPath || scanRoot || "…"}
+      {scanErr && (
+        <div className="warning-banner" role="alert" style={{ borderColor: "rgba(224,93,93,0.45)", background: "rgba(224,93,93,0.1)", color: "#ffb4b4", marginBottom: "1rem" }}>
+          {scanErr}
         </div>
       )}
 
       <div className="action-grid" style={{ marginBottom: "1rem" }}>
-        <button type="button" className="btn btn-primary" onClick={startScan} disabled={running}>
-          {running ? (
-            <>
-              <span className="spinner-inline" aria-hidden />
-              Scanning…
-            </>
-          ) : mode === "quick" ? (
-            "▶ Run quick scan"
-          ) : mode === "full" ? (
-            "▶ Run full system scan"
-          ) : (
-            "▶ Run custom scan"
-          )}
-        </button>
-        <button type="button" className="btn btn-danger" onClick={cancelScan} disabled={!running || !activeScanId}>
-          Cancel scan
-        </button>
-        <button type="button" className="btn btn-ghost" onClick={() => void loadHistory()} disabled={running}>
-          Refresh history
-        </button>
+        {!running && !finished && (
+          <button type="button" className="btn btn-primary" onClick={startScan} disabled={pendingStart}>
+            {pendingStart ? (
+              <>
+                <span className="spinner-inline" aria-hidden />
+                Starting…
+              </>
+            ) : (
+              `▶ ${mode === "quick" ? "Quick" : mode === "full" ? "Full system" : "Custom"} scan`
+            )}
+          </button>
+        )}
+        {running && (
+          <button type="button" className="btn btn-danger" onClick={cancelScan} disabled={!activeScanId}>
+            Cancel scan
+          </button>
+        )}
+        {finished && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => {
+              setLive(null);
+              setScanErr(null);
+            }}
+          >
+            New scan
+          </button>
+        )}
       </div>
 
-      {scanErr && (
-        <p className="hint" style={{ color: "var(--danger)", marginBottom: "0.75rem" }}>
-          {scanErr}
-        </p>
-      )}
-
-      {showBar && (
+      {showProgress && (
         <div className="scan-progress-wrap">
           <div className="scan-progress-meta">
             <span>
-              <strong>{progress}%</strong> complete
+              <strong>{progress}%</strong>
             </span>
             <span>
               {live?.progressExact && live.totalFiles != null
-                ? `${live.filesScanned} / ${live.totalFiles} files`
-                : `${live?.filesScanned ?? 0} files scanned`}
-              {live?.countPartial ? " (estimate)" : ""}
+                ? `${live.filesScanned.toLocaleString()} / ${live.totalFiles.toLocaleString()} files`
+                : `${(live?.filesScanned ?? 0).toLocaleString()} files scanned`}
+              {(live?.infectedCount ?? 0) > 0 && (
+                <> · <span style={{ color: "var(--danger)", fontWeight: 600 }}>{live!.infectedCount} threat{live!.infectedCount !== 1 ? "s" : ""}</span></>
+              )}
             </span>
           </div>
           <div className="scan-progress-track">
@@ -1151,48 +1225,36 @@ function ScanPanel({ health }: { health: Health | null }) {
               style={indeterminate ? undefined : { width: `${Math.max(2, progress)}%` }}
             />
           </div>
-          {(live?.currentFile || running) && (
-            <div className="scan-current-file">
-              <strong>Current file</strong>
-              {live?.currentFile || (pendingStart ? "Starting…" : "—")}
-            </div>
-          )}
-          {live && !running && (
-            <p className="hint" style={{ marginTop: "0.65rem" }}>
-              Status: <strong>{live.status}</strong>
-              {live.infectedCount > 0 && (
-                <>
-                  {" "}
-                  · <span style={{ color: "var(--danger)" }}>{live.infectedCount} finding(s)</span>
-                </>
-              )}
-              {live.spawnError && (
-                <>
-                  {" "}
-                  · <span style={{ color: "var(--danger)" }}>{live.spawnError}</span>
-                </>
-              )}
-            </p>
-          )}
         </div>
       )}
 
-      {live?.findings && live.findings.length > 0 && (
-        <pre className="log-box" style={{ maxHeight: 160 }}>
-          {live.findings.join("\n")}
-        </pre>
+      {finished && live && (
+        <div className={`scan-summary-banner ${summaryStatusCls}`}>
+          {live.status === "completed" && live.infectedCount === 0 && (
+            <>No threats found. {live.filesScanned.toLocaleString()} files scanned.</>
+          )}
+          {live.status === "completed" && live.infectedCount > 0 && (
+            <>{live.infectedCount} threat{live.infectedCount !== 1 ? "s" : ""} found in {live.filesScanned.toLocaleString()} files.</>
+          )}
+          {live.status === "error" && (
+            <>{live.spawnError || `Scan failed (exit code ${live.exitCode}).`}</>
+          )}
+          {live.status === "cancelled" && <>Scan cancelled.</>}
+        </div>
       )}
 
-      {live?.stdoutTail && (
-        <details className="advanced" style={{ marginTop: "0.75rem" }}>
-          <summary>Scanner output (tail)</summary>
-          <pre className="log-box" style={{ maxHeight: 280 }}>
-            {live.stdoutTail}
+      <ScanLogViewer lines={scanLines} running={running} />
+
+      {live?.findings && live.findings.length > 0 && !running && (
+        <details className="advanced" style={{ marginTop: "0.75rem" }} open>
+          <summary>Threat details ({live.findings.length})</summary>
+          <pre className="log-box" style={{ maxHeight: 200 }}>
+            {live.findings.join("\n")}
           </pre>
         </details>
       )}
 
-      {history.length > 0 && (
+      {history.length > 0 && !running && (
         <>
           <p className="section-label" style={{ marginTop: "1.25rem" }}>
             Recent scans

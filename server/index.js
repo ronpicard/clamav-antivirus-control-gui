@@ -85,9 +85,55 @@ const SAFE_CWD = (() => {
   return "/";
 })();
 
+const EXTRA_PATH_DIRS = [
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "/usr/local/bin",
+  "/usr/local/sbin",
+  "/usr/bin",
+  "/usr/sbin",
+  ...(process.platform === "win32"
+    ? [
+        path.join(process.env.ProgramFiles || "C:\\Program Files", "ClamAV"),
+        path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "ClamAV"),
+      ]
+    : []),
+];
+
+(() => {
+  const current = process.env.PATH || "";
+  const sep = process.platform === "win32" ? ";" : ":";
+  const parts = current.split(sep);
+  const missing = EXTRA_PATH_DIRS.filter(
+    (d) => !parts.includes(d) && fsSync.existsSync(d),
+  );
+  if (missing.length) {
+    process.env.PATH = [...missing, ...parts].join(sep);
+  }
+})();
+
+function resolveBinary(name) {
+  const dirs = (process.env.PATH || "").split(process.platform === "win32" ? ";" : ":");
+  const exts = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const full = path.join(dir, name + ext);
+      try {
+        if (fsSync.existsSync(full) && fsSync.statSync(full).isFile()) return full;
+      } catch { /* skip */ }
+    }
+  }
+  return name;
+}
+
+const CLAMDSCAN_BIN = resolveBinary("clamdscan");
+const CLAMSCAN_BIN = resolveBinary("clamscan");
+const FRESHCLAM_BIN = resolveBinary("freshclam");
+
 function runCmd(cmd, args, opts = {}) {
   const { env: envExtra, timeout, cwd, ...spawnOpts } = opts;
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
+    let settled = false;
     const child = spawn(cmd, args, {
       ...spawnOpts,
       cwd: cwd || SAFE_CWD,
@@ -102,9 +148,17 @@ function runCmd(cmd, args, opts = {}) {
     child.stderr?.on("data", (d) => {
       stderr += d.toString();
     });
-    child.on("error", reject);
+    child.on("error", (e) => {
+      if (!settled) {
+        settled = true;
+        resolve({ code: -1, stdout, stderr: stderr || String(e.message || e) });
+      }
+    });
     child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
+      if (!settled) {
+        settled = true;
+        resolve({ code, stdout, stderr });
+      }
     });
   });
 }
@@ -159,33 +213,29 @@ async function parseClamdConnectionFromDisk() {
   return hints;
 }
 
-/** Ping clamd; try unix socket / TCP from clamd.conf (and Homebrew paths on macOS), then defaults. */
+/** Ping clamd via clamdscan --ping. Try with --config-file first, then bare --fdpass. */
 async function tryClamdPing() {
-  const hints = await parseClamdConnectionFromDisk();
   const attempts = [];
 
-  if (hints.unixSocket && fsSync.existsSync(hints.unixSocket)) {
-    attempts.push({ args: ["--unix-socket", hints.unixSocket, "--ping"], label: `unix:${hints.unixSocket}` });
-  }
-  if (hints.tcpPort != null && Number.isFinite(hints.tcpPort)) {
+  if (fsSync.existsSync(CLAMD_CONF)) {
     attempts.push({
-      args: ["--host", hints.tcpHost || "127.0.0.1", "--port", String(hints.tcpPort), "--ping"],
-      label: `tcp:${hints.tcpHost}:${hints.tcpPort}`,
+      args: ["--config-file", CLAMD_CONF, "--ping", "1"],
+      label: `config:${CLAMD_CONF}`,
     });
   }
-  attempts.push({ args: ["--ping"], label: "default --ping" });
-  const pingFile = process.platform === "win32" ? "NUL"
-    : fsSync.existsSync("/usr/bin/true") ? "/usr/bin/true"
-    : fsSync.existsSync("/bin/true") ? "/bin/true" : "/dev/null";
-  attempts.push({ args: ["--fdpass", pingFile], label: "fdpass probe" });
+  attempts.push({ args: ["--ping", "1"], label: "default --ping" });
+  const probeFile = process.platform === "win32"
+    ? "NUL"
+    : fsSync.existsSync("/usr/bin/true")
+      ? "/usr/bin/true"
+      : fsSync.existsSync("/bin/true")
+        ? "/bin/true"
+        : "/dev/null";
+  attempts.push({ args: ["--fdpass", probeFile], label: "fdpass probe" });
 
   let last = "";
   for (const { args, label } of attempts) {
-    const r = await runCmd("clamdscan", args, { timeout: 20_000 }).catch((e) => ({
-      code: 1,
-      stdout: "",
-      stderr: String(e),
-    }));
+    const r = await runCmd(CLAMDSCAN_BIN, args, { timeout: 20_000 });
     const out = (r.stdout || "") + (r.stderr || "");
     if (r.code === 0 || /PONG|OK|Empty file/i.test(out)) {
       return { ok: true, method: label, detail: out.trim().slice(0, 300) };
@@ -195,16 +245,37 @@ async function tryClamdPing() {
   return { ok: false, method: null, detail: last || "clamdscan could not reach clamd" };
 }
 
-/** Scan / stream-scan arguments: prefer unix/tcp from config so scans work without broken fdpass. */
+/** Build clamdscan args for one-shot scanning (non-streaming). */
 async function buildClamdscanScanArgs(targetPath) {
-  const hints = await parseClamdConnectionFromDisk();
-  if (hints.unixSocket && fsSync.existsSync(hints.unixSocket)) {
-    return ["--unix-socket", hints.unixSocket, "-v", targetPath];
-  }
-  if (hints.tcpPort != null && Number.isFinite(hints.tcpPort)) {
-    return ["--host", hints.tcpHost || "127.0.0.1", "--port", String(hints.tcpPort), "-v", targetPath];
+  if (fsSync.existsSync(CLAMD_CONF)) {
+    return ["--config-file", CLAMD_CONF, "--fdpass", "-v", targetPath];
   }
   return ["--fdpass", "-v", targetPath];
+}
+
+/** Build clamscan args for streaming per-file output in live scan sessions. */
+function buildClamscanArgs(targetPath) {
+  const args = ["-r", "-v", "--stdout"];
+  if (fsSync.existsSync(CLAMD_CONF)) {
+    const r = readFileSafeSync(CLAMD_CONF);
+    if (r) {
+      const dbMatch = r.match(/^\s*DatabaseDirectory\s+(.+)$/im);
+      if (dbMatch) {
+        const dbDir = dbMatch[1].trim();
+        if (fsSync.existsSync(dbDir)) args.push("--database", dbDir);
+      }
+    }
+  }
+  args.push(targetPath);
+  return args;
+}
+
+function readFileSafeSync(p) {
+  try {
+    return fsSync.readFileSync(p, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 async function writeFileSafe(p, content) {
@@ -371,12 +442,12 @@ async function gatherInstallStatus() {
     confExists = false;
   }
 
-  const clamdscan = await runCmd("clamdscan", ["--version"]).catch((e) => ({
+  const clamdscan = await runCmd(CLAMDSCAN_BIN, ["--version"]).catch((e) => ({
     code: 1,
     stdout: "",
     stderr: String(e),
   }));
-  const freshclam = await runCmd("freshclam", ["--version"]).catch((e) => ({
+  const freshclam = await runCmd(FRESHCLAM_BIN, ["--version"]).catch((e) => ({
     code: 1,
     stdout: "",
     stderr: String(e),
@@ -877,7 +948,7 @@ async function runElevatedFreshclamOnly() {
     const scriptBody = `
 set +e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-freshclam
+'${FRESHCLAM_BIN.replace(/'/g, "'\\''")}'
 code=$?
 exit $code
 `;
@@ -899,7 +970,7 @@ exit $code
         via: null,
       };
     }
-    const r = await runCmd(pk, ["freshclam"], { timeout: FRESHCLAM_TIMEOUT_MS });
+    const r = await runCmd(pk, [FRESHCLAM_BIN], { timeout: FRESHCLAM_TIMEOUT_MS });
     return {
       ok: r.code === 0,
       stdout: r.stdout,
@@ -908,7 +979,7 @@ exit $code
     };
   }
   if (pl === "win32") {
-    const r = await runWindowsElevatedCmdC("freshclam", { timeout: FRESHCLAM_TIMEOUT_MS });
+    const r = await runWindowsElevatedCmdC(FRESHCLAM_BIN, { timeout: FRESHCLAM_TIMEOUT_MS });
     return {
       ok: r.ok,
       stdout: r.stdout,
@@ -925,8 +996,8 @@ exit $code
  */
 async function runFreshclamWithOptionalElevation(onRetryNotice) {
   const terminalLogs = [];
-  const first = await runCmd("freshclam", [], { timeout: FRESHCLAM_TIMEOUT_MS });
-  terminalLogs.push(logFromRunCmd("freshclam (your user)", "freshclam", [], first));
+  const first = await runCmd(FRESHCLAM_BIN, [], { timeout: FRESHCLAM_TIMEOUT_MS });
+  terminalLogs.push(logFromRunCmd("freshclam (your user)", FRESHCLAM_BIN, [], first));
 
   if (first.code === 0) {
     return {
@@ -1572,6 +1643,7 @@ function buildScanStatePayload(session) {
     progressExact: !!(session.totalFiles && !session.countPartial),
     currentFile: session.currentFile,
     infectedCount: session.infectedCount,
+    scanLines: session.scanLines.slice(-200),
     stdoutTail: tailString(session.stdout + session.stderr, 8000),
   };
 }
@@ -1616,36 +1688,53 @@ async function appendHistoryEntry(entry) {
   await fs.writeFile(HISTORY_FILE, JSON.stringify(prev.slice(0, SCAN_HISTORY_MAX), null, 2), "utf8");
 }
 
-function parseClamdVerboseLine(line) {
+function parseScanOutputLine(line) {
   const t = line.trim();
-  if (!t || t.startsWith("LibClamAV") || /SCAN SUMMARY/i.test(t)) return null;
-  const m = t.match(/^(.+):\s*(.+)$/);
+  if (!t) return null;
+  if (/^-+\s*SCAN SUMMARY/i.test(t)) return null;
+  if (/^(Known viruses|Engine version|Scanned (dir|file)|Infected files|Data (scan|read)|Time):/i.test(t)) return null;
+  if (/^LibClamAV/i.test(t)) return null;
+  const scanningMatch = t.match(/^Scanning\s+(.+)$/);
+  if (scanningMatch) return { kind: "scanning", filePath: scanningMatch[1].trim() };
+  const m = t.match(/^(.+?):\s+(.+)$/);
   if (!m) return null;
   const filePath = m[1].trim();
   const rest = m[2].trim();
   if (/^OK$/i.test(rest) || /^Empty file/i.test(rest)) return { kind: "ok", filePath };
-  if (/FOUND/i.test(rest)) return { kind: "found", filePath, detail: rest };
-  if (/Access denied|ERROR|Excluded/i.test(rest)) return { kind: "skip", filePath };
+  if (/FOUND$/i.test(rest)) return { kind: "found", filePath, detail: rest };
+  if (/Access denied|ERROR|Excluded|Can't access|Permission denied|lstat\(\) failed/i.test(rest))
+    return { kind: "skip", filePath, detail: rest };
   return null;
 }
+
+const SCAN_LOG_MAX = 500;
 
 function feedScanChunk(session, chunk) {
   session.lineBuf += chunk;
   const parts = session.lineBuf.split(/\r?\n/);
   session.lineBuf = parts.pop() || "";
   for (const line of parts) {
-    const parsed = parseClamdVerboseLine(line);
-    if (!parsed) continue;
-    if (parsed.kind === "ok" || parsed.kind === "found" || parsed.kind === "skip") {
-      session.filesScanned++;
-      session.currentFile = parsed.filePath;
+    const raw = line.trim();
+    if (!raw) continue;
+    const parsed = parseScanOutputLine(raw);
+    if (parsed) {
+      if (parsed.kind === "scanning") {
+        session.currentFile = parsed.filePath;
+      } else if (parsed.kind === "ok" || parsed.kind === "found" || parsed.kind === "skip") {
+        session.filesScanned++;
+        session.currentFile = parsed.filePath;
+        session.scanLines.push({ file: parsed.filePath, status: parsed.kind, detail: parsed.detail || null });
+      }
+      if (parsed.kind === "found") {
+        session.infectedCount++;
+        session.findings.push(`${parsed.filePath}: ${parsed.detail}`);
+      }
     }
-    if (parsed.kind === "found") {
-      session.infectedCount++;
-      session.findings.push(`${parsed.filePath}: ${parsed.detail}`);
+    if (session.scanLines.length > SCAN_LOG_MAX) {
+      session.scanLines = session.scanLines.slice(-SCAN_LOG_MAX);
     }
     const now = Date.now();
-    const urgent = parsed.kind === "found";
+    const urgent = parsed?.kind === "found";
     if (urgent || now - (session.lastSsePush || 0) >= 75) {
       session.lastSsePush = now;
       pushScanState(session);
@@ -1717,8 +1806,8 @@ async function runScanSession(scanId) {
   session.status = "running";
   pushScanState(session);
 
-  const scanArgs = await buildClamdscanScanArgs(session.targetPath);
-  const child = spawn("clamdscan", scanArgs, {
+  const scanArgs = buildClamscanArgs(session.targetPath);
+  const child = spawn(CLAMSCAN_BIN, scanArgs, {
     cwd: SAFE_CWD,
     env: { ...process.env },
   });
@@ -1756,11 +1845,22 @@ async function runScanSession(scanId) {
     session.status = "cancelled";
   } else if (session.spawnError) {
     session.status = "error";
+    if (session.spawnError.includes("ENOENT")) {
+      session.spawnError = "clamscan binary not found. Is ClamAV installed?";
+    }
   } else if (session.exitCode === 0 || session.exitCode === 1) {
     session.status = "completed";
     session.infected = session.exitCode === 1;
+  } else if (session.exitCode === 2) {
+    session.status = "error";
+    if (!session.spawnError) {
+      session.spawnError = `Scanner error (exit 2). ${(session.stderr || "").slice(0, 300)}`;
+    }
   } else {
     session.status = "error";
+    if (!session.spawnError) {
+      session.spawnError = `clamscan exited with code ${session.exitCode}. ${(session.stderr || "").slice(0, 300)}`;
+    }
   }
 
   pushScanState(session);
@@ -1926,12 +2026,12 @@ app.post("/api/install/uninstall", async (_req, res) => {
 });
 
 app.get("/api/health", async (_req, res) => {
-  const clamd = await runCmd("clamdscan", ["--version"]).catch((e) => ({
+  const clamd = await runCmd(CLAMDSCAN_BIN, ["--version"]).catch((e) => ({
     code: 1,
     stdout: "",
     stderr: String(e),
   }));
-  const fresh = await runCmd("freshclam", ["--version"]).catch((e) => ({
+  const fresh = await runCmd(FRESHCLAM_BIN, ["--version"]).catch((e) => ({
     code: 1,
     stdout: "",
     stderr: String(e),
@@ -2054,7 +2154,7 @@ app.get("/api/actions/freshclam-stream", async (req, res) => {
     sseWrite(res, { type: "line", text: text.slice(0, 2000) });
   };
 
-  const child = spawn("freshclam", [], { cwd: SAFE_CWD, env: { ...process.env } });
+  const child = spawn(FRESHCLAM_BIN, [], { cwd: SAFE_CWD, env: { ...process.env } });
   let stdout = "";
   let stderr = "";
   let lineBuf = "";
@@ -2103,7 +2203,7 @@ app.get("/api/actions/freshclam-stream", async (req, res) => {
     const fullErr = stderr;
     const userExit = typeof code === "number" ? code : signal ? 1 : 1;
     let terminalLogs = [
-      logFromRunCmd("freshclam (streamed run, your user)", "freshclam", [], {
+      logFromRunCmd("freshclam (streamed run, your user)", FRESHCLAM_BIN, [], {
         code: userExit,
         stdout: fullOut,
         stderr: fullErr,
@@ -2332,6 +2432,7 @@ app.post("/api/scan/start", async (req, res) => {
     stderr: "",
     lineBuf: "",
     findings: [],
+    scanLines: [],
     startedAt: Date.now(),
     cancelRequested: false,
     spawnError: null,
@@ -2400,19 +2501,32 @@ app.post("/api/scan", async (req, res) => {
   } catch {
     return res.status(404).json({ error: "Path not found" });
   }
-  const scanArgs = await buildClamdscanScanArgs(target);
-  const { stdout, stderr, code } = await runCmd("clamdscan", scanArgs, {
-    timeout: 3_600_000,
-  });
-  res.json({
-    ok: code === 0 || code === 1,
-    code,
-    stdout,
-    stderr,
-    infected: code === 1,
-    mode,
-    target,
-  });
+  try {
+    const scanArgs = await buildClamdscanScanArgs(target);
+    const { stdout, stderr, code } = await runCmd(CLAMDSCAN_BIN, scanArgs, {
+      timeout: 3_600_000,
+    });
+    res.json({
+      ok: code === 0 || code === 1,
+      code,
+      stdout,
+      stderr,
+      infected: code === 1,
+      mode,
+      target,
+    });
+  } catch (e) {
+    const msg = String(e.message || e);
+    const isEnoent = msg.includes("ENOENT") || msg.includes("not found");
+    res.status(isEnoent ? 502 : 500).json({
+      ok: false,
+      error: isEnoent
+        ? "clamdscan binary not found. Make sure ClamAV is installed."
+        : `Scan failed: ${msg}`,
+      mode,
+      target,
+    });
+  }
 });
 
 function jobLineIndices(lines) {
