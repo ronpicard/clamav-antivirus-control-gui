@@ -51,6 +51,7 @@ const FRESHCLAM_CONF = process.env.FRESHCLAM_CONF || hostPaths.freshclam;
 const SCAN_ROOT = process.env.SCAN_ROOT || defaultScanRoot();
 const CRON_USER = process.env.CRON_USER || os.userInfo().username;
 const HISTORY_FILE = path.join(SCAN_ROOT, ".clamav-gui-scan-history.json");
+const QUARANTINE_DIR = process.env.QUARANTINE_DIR || path.join(os.homedir(), "Documents", "ClamAV-Quarantine");
 const SCAN_HISTORY_MAX = 80;
 const scanSessions = new Map();
 const defaultsDir = path.join(__dirname, "defaults");
@@ -254,7 +255,8 @@ async function buildClamdscanScanArgs(targetPath) {
 }
 
 /** Build clamscan args for streaming per-file output in live scan sessions. */
-function buildClamscanArgs(targetPath) {
+function buildClamscanArgs(targets) {
+  const paths = Array.isArray(targets) ? targets : [targets];
   const args = ["-r", "-v", "--stdout"];
   if (fsSync.existsSync(CLAMD_CONF)) {
     const r = readFileSafeSync(CLAMD_CONF);
@@ -266,7 +268,9 @@ function buildClamscanArgs(targetPath) {
       }
     }
   }
-  args.push(targetPath);
+  try { fsSync.mkdirSync(QUARANTINE_DIR, { recursive: true }); } catch { /* ignore */ }
+  args.push(`--move=${QUARANTINE_DIR}`);
+  args.push(...paths);
   return args;
 }
 
@@ -736,20 +740,48 @@ function resolveCustomScanTarget(userPath) {
   return resolveScanTarget(p);
 }
 
+function standardScanDirs() {
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, "Downloads"),
+    path.join(home, "Documents"),
+    path.join(home, "Desktop"),
+    path.join(home, "Applications"),
+    SCAN_ROOT,
+  ];
+  if (process.platform === "win32") {
+    const userProfile = process.env.USERPROFILE || home;
+    candidates.push(path.join(userProfile, "AppData", "Local", "Temp"));
+  } else {
+    candidates.push("/tmp");
+  }
+  const existing = [];
+  for (const d of candidates) {
+    try {
+      if (fsSync.existsSync(d) && fsSync.statSync(d).isDirectory()) {
+        if (!existing.includes(d)) existing.push(d);
+      }
+    } catch { /* skip */ }
+  }
+  return existing.length > 0 ? existing : [home];
+}
+
 function resolveScanRequest(body) {
   const mode = body?.mode || "custom";
   if (mode === "quick") {
-    return { target: path.resolve(SCAN_ROOT, "."), mode: "quick" };
+    const dirs = standardScanDirs();
+    return { target: dirs.join("\n"), targets: dirs, mode: "quick" };
   }
   if (mode === "full") {
-    return { target: fullSystemScanRoot(), mode: "full" };
+    const t = fullSystemScanRoot();
+    return { target: t, targets: [t], mode: "full" };
   }
   const target = resolveCustomScanTarget(body?.path);
-  return target ? { target, mode: "custom" } : { target: null, mode: "custom" };
+  return target ? { target, targets: [target], mode: "custom" } : { target: null, targets: [], mode: "custom" };
 }
 
 function scanTargetLabel(mode, target) {
-  if (mode === "quick") return "Scan folder";
+  if (mode === "quick") return "Standard scan (Downloads, Documents, Desktop, …)";
   if (mode === "full") return "Full system";
   const rel = path.relative(path.resolve(SCAN_ROOT), target);
   if (rel && !rel.startsWith("..")) return rel || ".";
@@ -1786,9 +1818,15 @@ async function runScanSession(scanId) {
   pushScanState(session);
 
   try {
-    const { total, partial } = await countScanTargets(session.targetPath);
-    session.totalFiles = total;
-    session.countPartial = partial;
+    let totalAll = 0;
+    let partialAny = false;
+    for (const t of session.targets) {
+      const { total, partial } = await countScanTargets(t);
+      totalAll += total;
+      if (partial) partialAny = true;
+    }
+    session.totalFiles = totalAll;
+    session.countPartial = partialAny;
     pushScanState(session);
   } catch {
     session.totalFiles = null;
@@ -1806,7 +1844,7 @@ async function runScanSession(scanId) {
   session.status = "running";
   pushScanState(session);
 
-  const scanArgs = buildClamscanArgs(session.targetPath);
+  const scanArgs = buildClamscanArgs(session.targets);
   const child = spawn(CLAMSCAN_BIN, scanArgs, {
     cwd: SAFE_CWD,
     env: { ...process.env },
@@ -2068,10 +2106,14 @@ app.get("/api/health", async (_req, res) => {
       clamdTcp: clamdConn.tcpPort != null ? `${clamdConn.tcpHost}:${clamdConn.tcpPort}` : null,
     },
     scan: {
-      quickPath: path.resolve(SCAN_ROOT, "."),
+      quickDirs: standardScanDirs(),
       fullPath: fullSystemScanRoot(),
       customHint:
-        "Relative paths use your scan folder. Absolute paths must be inside your home folder or the scan folder.",
+        "Absolute paths must be inside your home folder.",
+    },
+    quarantine: {
+      dir: QUARANTINE_DIR,
+      enabled: true,
     },
   });
 });
@@ -2311,6 +2353,43 @@ app.post("/api/actions/realtime", async (req, res) => {
   res.json(r);
 });
 
+app.post("/api/actions/firewall", async (req, res) => {
+  const action = req.body?.action;
+  if (!["on", "off"].includes(action)) {
+    return res.status(400).json({ ok: false, error: "action must be on or off" });
+  }
+  const pl = process.platform;
+  try {
+    if (pl === "darwin") {
+      const flag = action === "on" ? "--setglobalstate" : "--setglobalstate";
+      const val = action === "on" ? "on" : "off";
+      const r = await runDarwinAdminBash(
+        `/usr/libexec/ApplicationFirewall/socketfilterfw ${flag} ${val}`,
+        { timeout: 15_000 },
+      );
+      const combined = `${r.stdout}\n${r.stderr}`.trim();
+      const ok = r.ok || /enabled|disabled/i.test(combined);
+      return res.json({ ok, detail: combined });
+    }
+    if (pl === "linux") {
+      const pk = await resolvePkexec();
+      if (!pk) return res.json({ ok: false, detail: "pkexec not found" });
+      const ufwR = await runCmd(pk, ["ufw", action === "on" ? "enable" : "disable"], { timeout: 15_000 });
+      if (ufwR.code === 0) return res.json({ ok: true, detail: (ufwR.stdout + ufwR.stderr).trim() });
+      const fwR = await runCmd(pk, ["firewall-cmd", action === "on" ? "--reload" : "--complete-reload"], { timeout: 15_000 });
+      return res.json({ ok: fwR.code === 0, detail: (fwR.stdout + fwR.stderr).trim() });
+    }
+    if (pl === "win32") {
+      const val = action === "on" ? "on" : "off";
+      const r = await runWindowsElevatedCmdC(`netsh advfirewall set allprofiles state ${val}`, { timeout: 15_000 });
+      return res.json({ ok: r.ok, detail: (r.stdout + r.stderr).trim() });
+    }
+    res.json({ ok: false, detail: "Unsupported platform" });
+  } catch (e) {
+    res.status(500).json({ ok: false, detail: String(e.message || e) });
+  }
+});
+
 app.post("/api/actions/restart-clamd", async (_req, res) => {
   if (process.platform === "darwin") {
     const brewPath = await resolveBrewPath();
@@ -2402,23 +2481,26 @@ app.get("/api/scan/stream", (req, res) => {
 });
 
 app.post("/api/scan/start", async (req, res) => {
-  const { target, mode } = resolveScanRequest(req.body || {});
-  if (!target) {
+  const { target, targets, mode } = resolveScanRequest(req.body || {});
+  if (!target || !targets || targets.length === 0) {
     return res.status(400).json({
       error:
-        "Invalid path. Quick scan uses your scan folder. Custom: use a subpath there, or an absolute path under your home directory or scan folder.",
+        "Invalid path. Standard scan covers Downloads, Documents, Desktop. Custom: use an absolute path under your home directory.",
     });
   }
-  try {
-    await fs.access(target);
-  } catch {
-    return res.status(404).json({ error: "Path not found" });
+  for (const t of targets) {
+    try {
+      await fs.access(t);
+    } catch {
+      return res.status(404).json({ error: `Path not found: ${t}` });
+    }
   }
   const scanId = crypto.randomUUID();
   const session = {
     id: scanId,
     mode,
-    targetPath: target,
+    targets,
+    targetPath: targets.join(", "),
     targetLabel: scanTargetLabel(mode, target),
     status: "queued",
     child: null,
@@ -2526,6 +2608,94 @@ app.post("/api/scan", async (req, res) => {
       mode,
       target,
     });
+  }
+});
+
+app.get("/api/quarantine", async (_req, res) => {
+  try {
+    await fs.mkdir(QUARANTINE_DIR, { recursive: true });
+    const entries = await fs.readdir(QUARANTINE_DIR);
+    const items = [];
+    for (const name of entries) {
+      if (name.startsWith(".")) continue;
+      const full = path.join(QUARANTINE_DIR, name);
+      try {
+        const st = await fs.stat(full);
+        items.push({
+          name,
+          path: full,
+          size: st.size,
+          quarantinedAt: st.mtimeMs,
+        });
+      } catch { /* skip */ }
+    }
+    items.sort((a, b) => b.quarantinedAt - a.quarantinedAt);
+    res.json({ dir: QUARANTINE_DIR, items });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/quarantine/delete", async (req, res) => {
+  const name = req.body?.name;
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ ok: false, error: "name is required" });
+  }
+  if (name.includes("/") || name.includes("\\") || name === ".." || name === ".") {
+    return res.status(400).json({ ok: false, error: "Invalid filename" });
+  }
+  const full = path.join(QUARANTINE_DIR, name);
+  if (!full.startsWith(path.resolve(QUARANTINE_DIR) + path.sep) && full !== path.resolve(QUARANTINE_DIR)) {
+    return res.status(400).json({ ok: false, error: "Path escapes quarantine" });
+  }
+  try {
+    await fs.unlink(full);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+app.post("/api/quarantine/restore", async (req, res) => {
+  const name = req.body?.name;
+  const destination = req.body?.destination;
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ ok: false, error: "name is required" });
+  }
+  if (name.includes("/") || name.includes("\\") || name === ".." || name === ".") {
+    return res.status(400).json({ ok: false, error: "Invalid filename" });
+  }
+  const src = path.join(QUARANTINE_DIR, name);
+  const home = os.homedir();
+  const dest = destination
+    ? path.resolve(String(destination))
+    : path.join(home, "Desktop", name);
+  if (!dest.startsWith(home + path.sep) && dest !== home) {
+    return res.status(400).json({ ok: false, error: "Destination must be under your home directory" });
+  }
+  try {
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.rename(src, dest);
+    res.json({ ok: true, restoredTo: dest });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+app.post("/api/quarantine/delete-all", async (_req, res) => {
+  try {
+    const entries = await fs.readdir(QUARANTINE_DIR);
+    let deleted = 0;
+    for (const name of entries) {
+      if (name.startsWith(".")) continue;
+      try {
+        await fs.unlink(path.join(QUARANTINE_DIR, name));
+        deleted++;
+      } catch { /* skip */ }
+    }
+    res.json({ ok: true, deleted });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
 
@@ -2651,6 +2821,7 @@ app.get("*", (_req, res) => {
 
 async function main() {
   await fs.mkdir(SCAN_ROOT, { recursive: true });
+  await fs.mkdir(QUARANTINE_DIR, { recursive: true });
   app.listen(PORT, BIND_HOST, () => {
     console.log(`ClamAV GUI listening on ${BIND_HOST}:${PORT}`);
   });

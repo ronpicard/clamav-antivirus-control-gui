@@ -26,9 +26,13 @@ type Health = {
     clamdTcp?: string | null;
   };
   scan?: {
-    quickPath: string;
+    quickDirs: string[];
     fullPath: string;
     customHint: string;
+  };
+  quarantine?: {
+    dir: string;
+    enabled: boolean;
   };
 };
 
@@ -146,16 +150,32 @@ const TABS = [
   ["home", "Dashboard", "📊", "See what is working and refresh ClamAV"],
   ["auto-install", "Auto-install", "📦", "Install ClamAV — guided on Mac + Homebrew"],
   ["scan", "Scan", "🔎", "Scan files with live progress"],
+  ["quarantine", "Quarantine", "🔒", "View and manage quarantined threats"],
   ["cron", "Schedules", "⏰", "Automate updates and scans (Mac/Linux)"],
   ["config", "Config", "⚙️", "Edit clamd and freshclam settings"],
   ["instructions", "Instructions", "📖", "Install ClamAV and use this app"],
 ] as const;
+
+type ScanSessionState = {
+  activeScanId: string | null;
+  live: ScanStreamState | null;
+  scanErr: string | null;
+  pendingStart: boolean;
+};
+
+const EMPTY_SCAN_SESSION: ScanSessionState = {
+  activeScanId: null,
+  live: null,
+  scanErr: null,
+  pendingStart: false,
+};
 
 export default function App() {
   const [tab, setTab] = useState<(typeof TABS)[number][0]>("home");
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [scanSession, setScanSession] = useState<ScanSessionState>(EMPTY_SCAN_SESSION);
 
   const refresh = useCallback(async (silent?: boolean) => {
     if (!silent) setLoading(true);
@@ -224,13 +244,18 @@ export default function App() {
         </div>
       )}
 
-      <div className="panel-wrap" key={tab}>
+      <div className="panel-wrap" key={tab === "scan" ? "scan-persistent" : tab}>
         {tab === "home" && <Dashboard health={health} loading={loading} onRefresh={refresh} />}
         {tab === "auto-install" && <AutoInstallPanel health={health} onRefreshAll={refresh} />}
-        {tab === "scan" && <ScanPanel health={health} />}
+        {tab === "quarantine" && <QuarantinePanel />}
         {tab === "cron" && <CronPanel />}
         {tab === "config" && <ConfigPanel />}
         {tab === "instructions" && <InstructionsPanel />}
+      </div>
+      <div style={tab === "scan" ? undefined : { display: "none" }}>
+        <div className="panel-wrap">
+          <ScanPanel health={health} session={scanSession} setSession={setScanSession} onRefresh={refresh} />
+        </div>
       </div>
     </>
   );
@@ -433,6 +458,31 @@ function Dashboard({
     }
   };
 
+  const firewallAction = async (action: "on" | "off") => {
+    setSvcBusy(true);
+    setSvcBanner(null);
+    try {
+      const r = await api("/api/actions/firewall", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const j = (await r.json()) as { ok?: boolean; detail?: string };
+      if (j.ok) {
+        setSvcBanner({ ok: true, text: `Firewall ${action === "on" ? "enabled" : "disabled"}.` });
+      } else {
+        setSvcBanner({ ok: false, text: j.detail || "Firewall command failed." });
+      }
+      void onRefresh(true);
+      window.setTimeout(() => void onRefresh(true), 1500);
+    } catch (e) {
+      setSvcBanner({ ok: false, text: String(e) });
+      void onRefresh(true);
+    } finally {
+      setSvcBusy(false);
+    }
+  };
+
   const c = health?.clamav;
   const fw = health?.firewall;
   const svc = health?.clamdService;
@@ -446,10 +496,17 @@ function Dashboard({
   const serviceRunning = !!svc?.running;
   const daemonPillClass = daemonResponding ? "ok" : serviceRunning ? "wait" : "wait";
   const daemonPillLabel = daemonResponding
-    ? `on / responding${c?.pingMethod ? ` (${c.pingMethod})` : ""}`
+    ? "on / responding"
     : serviceRunning
       ? "service on, daemon not answering yet"
       : "off or not responding";
+  const daemonPillTitle = [
+    daemonPillLabel,
+    c?.pingMethod,
+    c?.pingError && !daemonResponding ? `Error: ${c.pingError}` : "",
+  ]
+    .filter(Boolean)
+    .join(" — ");
 
   return (
     <div className="card">
@@ -470,17 +527,17 @@ function Dashboard({
             <span className={`status-pill ${c?.freshclamInstalled ? "ok" : "bad"}`}>
               <span className="dot" aria-hidden />
               Definition updater
-              <span style={{ opacity: 0.75, fontWeight: 500 }}>freshclam</span>
+              <span className="status-pill-muted">freshclam</span>
             </span>
             <span className={`status-pill ${c?.clamdscanInstalled ? "ok" : "bad"}`}>
               <span className="dot" aria-hidden />
               Scanner CLI
-              <span style={{ opacity: 0.75, fontWeight: 500 }}>clamdscan</span>
+              <span className="status-pill-muted">clamdscan</span>
             </span>
-            <span className={`status-pill ${daemonPillClass}`}>
+            <span className={`status-pill ${daemonPillClass}`} title={daemonPillTitle || undefined}>
               <span className="dot" aria-hidden />
               Scanner daemon
-              <span style={{ opacity: 0.75, fontWeight: 500 }}>{daemonPillLabel}</span>
+              <span className="status-pill-muted">{daemonPillLabel}</span>
             </span>
             <span
               className={`status-pill ${fwOk ? "ok" : fwOff ? "bad" : "wait"}`}
@@ -488,16 +545,45 @@ function Dashboard({
             >
               <span className="dot" aria-hidden />
               Firewall
-              <span style={{ opacity: 0.75, fontWeight: 500 }}>
+              <span className="status-pill-muted">
                 {fwOk ? "on" : fwOff ? "off" : fwUnknown ? "unknown" : "—"}
               </span>
             </span>
+            <span
+              className={`status-pill ${rt?.running ? "ok" : rt?.available ? "bad" : "wait"}`}
+              title={rt?.detail}
+            >
+              <span className="dot" aria-hidden />
+              Real-time
+              <span className="status-pill-muted">
+                {rt?.running ? "on" : rt?.available ? "off" : "n/a"}
+              </span>
+            </span>
           </div>
-          {fw?.detail && (
-            <p className="hint" style={{ marginTop: "-0.35rem", marginBottom: "0.85rem" }}>
-              <strong>{fw.source}:</strong> {fw.detail}
-            </p>
-          )}
+          <p className="section-label">Firewall</p>
+          <p className="hint" style={{ marginBottom: "0.65rem" }}>
+            <strong>{fw?.source || "System firewall"}:</strong>{" "}
+            {fwOk ? "Enabled" : fwOff ? "Disabled" : "Unknown"}
+            {fw?.detail ? ` — ${fw.detail}` : ""}
+          </p>
+          <div className="action-grid" style={{ marginBottom: "1rem" }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={svcBusy || !!busy || fwOk}
+              onClick={() => void firewallAction("on")}
+            >
+              ▶ Enable firewall
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={svcBusy || !!busy || fwOff}
+              onClick={() => void firewallAction("off")}
+            >
+              ■ Disable firewall
+            </button>
+          </div>
 
           <p className="section-label">Scanner daemon</p>
           <p className="hint" style={{ marginBottom: "0.65rem" }}>
@@ -578,11 +664,11 @@ function Dashboard({
             </button>
           </div>
 
-          {rt?.available && (
+          <p className="section-label">Real-time protection</p>
+          {rt?.available ? (
             <>
-              <p className="section-label">Real-time protection (on-access)</p>
               <p className="hint" style={{ marginBottom: "0.65rem" }}>
-                Linux <code>clamonacc</code> when your distro ships it.{" "}
+                On-access scanning (<code>clamonacc</code>):{" "}
                 <strong>{rt.running ? "Running" : "Stopped"}</strong>
                 {rt.detail ? ` — ${rt.detail}` : ""}
               </p>
@@ -605,6 +691,11 @@ function Dashboard({
                 </button>
               </div>
             </>
+          ) : (
+            <p className="hint" style={{ marginBottom: "0.85rem" }}>
+              {rt?.detail || "On-access scanning (clamonacc) is not available on this platform."}{" "}
+              Use scheduled scans from the Scan tab instead.
+            </p>
           )}
 
           <div className="steps">
@@ -978,20 +1069,30 @@ function ScanLogViewer({ lines, running }: { lines: ScanLine[]; running: boolean
   );
 }
 
-function ScanPanel({ health }: { health: Health | null }) {
+function ScanPanel({
+  health,
+  session,
+  setSession,
+  onRefresh: _onRefresh,
+}: {
+  health: Health | null;
+  session: ScanSessionState;
+  setSession: React.Dispatch<React.SetStateAction<ScanSessionState>>;
+  onRefresh: (silent?: boolean) => void | Promise<void>;
+}) {
   const [mode, setMode] = useState<ScanMode>("quick");
   const [customPath, setCustomPath] = useState(".");
-  const [pendingStart, setPendingStart] = useState(false);
-  const [activeScanId, setActiveScanId] = useState<string | null>(null);
-  const [live, setLive] = useState<ScanStreamState | null>(null);
-  const [scanErr, setScanErr] = useState<string | null>(null);
   const [history, setHistory] = useState<ScanHistoryEntry[]>([]);
   const esRef = useRef<EventSource | null>(null);
   const streamDoneRef = useRef(false);
 
-  const scanRoot = health?.paths.scanRoot ?? "";
+  const { activeScanId, live, scanErr, pendingStart } = session;
+  const setActiveScanId = (id: string | null) => setSession((s) => ({ ...s, activeScanId: id }));
+  const setLive = (l: ScanStreamState | null) => setSession((s) => ({ ...s, live: l }));
+  const setScanErr = (e: string | null) => setSession((s) => ({ ...s, scanErr: e }));
+  const setPendingStart = (b: boolean) => setSession((s) => ({ ...s, pendingStart: b }));
+
   const scanMeta = health?.scan;
-  const daemonUp = health?.clamav?.daemonResponding ?? false;
 
   const running =
     pendingStart ||
@@ -1043,14 +1144,15 @@ function ScanPanel({ health }: { health: Health | null }) {
       esRef.current = null;
       setActiveScanId(null);
       if (!streamDoneRef.current) {
-        setScanErr((prev) => prev || "Scan stream disconnected");
+        setScanErr(scanErr || "Scan stream disconnected");
       }
     };
     return () => {
       es.close();
       if (esRef.current === es) esRef.current = null;
     };
-  }, [activeScanId, loadHistory]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScanId]);
 
   const startScan = async () => {
     setScanErr(null);
@@ -1110,12 +1212,6 @@ function ScanPanel({ health }: { health: Health | null }) {
       <p className="section-label">Scan</p>
       <h2>Virus scan</h2>
 
-      {!daemonUp && !running && (
-        <div className="warning-banner" role="alert" style={{ marginBottom: "1rem" }}>
-          The ClamAV daemon (clamd) is not responding. Start it from the Dashboard tab before scanning.
-        </div>
-      )}
-
       {!running && !finished && (
         <>
           <div className="scan-mode-grid">
@@ -1124,8 +1220,8 @@ function ScanPanel({ health }: { health: Health | null }) {
               className={`scan-mode-card ${mode === "quick" ? "selected" : ""}`}
               onClick={() => setMode("quick")}
             >
-              <strong>Quick scan</strong>
-              <span>{scanRoot || "Scan folder"}</span>
+              <strong>Standard scan</strong>
+              <span>Downloads, Documents, Desktop, …</span>
             </button>
             <button
               type="button"
@@ -1144,6 +1240,12 @@ function ScanPanel({ health }: { health: Health | null }) {
               <span>Choose a folder</span>
             </button>
           </div>
+
+          {mode === "quick" && scanMeta?.quickDirs && (
+            <p className="hint" style={{ marginBottom: "0.65rem", fontSize: "0.8rem" }}>
+              Scans: {scanMeta.quickDirs.map((d) => d.split("/").pop()).join(", ")}
+            </p>
+          )}
 
           {mode === "custom" && (
             <div style={{ marginBottom: "1rem" }}>
@@ -1181,7 +1283,7 @@ function ScanPanel({ health }: { health: Health | null }) {
                 Starting…
               </>
             ) : (
-              `▶ ${mode === "quick" ? "Quick" : mode === "full" ? "Full system" : "Custom"} scan`
+              `▶ ${mode === "quick" ? "Standard" : mode === "full" ? "Full system" : "Custom"} scan`
             )}
           </button>
         )}
@@ -1194,10 +1296,7 @@ function ScanPanel({ health }: { health: Health | null }) {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => {
-              setLive(null);
-              setScanErr(null);
-            }}
+            onClick={() => setSession(EMPTY_SCAN_SESSION)}
           >
             New scan
           </button>
@@ -1234,7 +1333,7 @@ function ScanPanel({ health }: { health: Health | null }) {
             <>No threats found. {live.filesScanned.toLocaleString()} files scanned.</>
           )}
           {live.status === "completed" && live.infectedCount > 0 && (
-            <>{live.infectedCount} threat{live.infectedCount !== 1 ? "s" : ""} found in {live.filesScanned.toLocaleString()} files.</>
+            <>{live.infectedCount} threat{live.infectedCount !== 1 ? "s" : ""} found and quarantined. {live.filesScanned.toLocaleString()} files scanned. Check the Quarantine tab to review.</>
           )}
           {live.status === "error" && (
             <>{live.spawnError || `Scan failed (exit code ${live.exitCode}).`}</>
@@ -1726,6 +1825,212 @@ function buildPresets(scanRoot: string) {
       comment: "ClamAV Control: weekly scan",
     },
   ];
+}
+
+type QuarantineItem = {
+  name: string;
+  path: string;
+  size: number;
+  quarantinedAt: number;
+};
+
+function formatBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function QuarantinePanel() {
+  const [items, setItems] = useState<QuarantineItem[]>([]);
+  const [dir, setDir] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api("/api/quarantine");
+      if (!r.ok) throw new Error(await r.text());
+      const j = (await r.json()) as { dir: string; items: QuarantineItem[] };
+      setItems(j.items || []);
+      setDir(j.dir || "");
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const deleteItem = async (name: string) => {
+    setBusy(name);
+    setMsg(null);
+    try {
+      const r = await api("/api/quarantine/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string };
+      if (j.ok) {
+        setMsg({ ok: true, text: `Deleted ${name}` });
+        void load();
+      } else {
+        setMsg({ ok: false, text: j.error || "Delete failed" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restoreItem = async (name: string) => {
+    setBusy(name);
+    setMsg(null);
+    try {
+      const r = await api("/api/quarantine/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string; restoredTo?: string };
+      if (j.ok) {
+        setMsg({ ok: true, text: `Restored ${name} to ${j.restoredTo}` });
+        void load();
+      } else {
+        setMsg({ ok: false, text: j.error || "Restore failed" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteAll = async () => {
+    if (!confirm("Permanently delete all quarantined files? This cannot be undone.")) return;
+    setBusy("__all__");
+    setMsg(null);
+    try {
+      const r = await api("/api/quarantine/delete-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const j = (await r.json()) as { ok?: boolean; deleted?: number; error?: string };
+      if (j.ok) {
+        setMsg({ ok: true, text: `Deleted ${j.deleted} file${j.deleted !== 1 ? "s" : ""}` });
+        void load();
+      } else {
+        setMsg({ ok: false, text: j.error || "Delete all failed" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="card">
+      <p className="section-label">Quarantine</p>
+      <h2>Quarantined threats</h2>
+      <p className="hint" style={{ marginBottom: "0.75rem" }}>
+        When a scan finds malware, the infected file is automatically moved here.
+        You can permanently delete it or restore it if you believe it is a false positive.
+        {dir && (
+          <>
+            <br />
+            Quarantine folder: <code>{dir}</code>
+          </>
+        )}
+      </p>
+
+      {msg && (
+        <div
+          className="svc-action-banner"
+          role="status"
+          style={{
+            marginBottom: "0.85rem",
+            padding: "0.6rem 0.85rem",
+            borderRadius: 10,
+            fontSize: "0.82rem",
+            border: `1px solid ${msg.ok ? "rgba(61,217,160,0.45)" : "rgba(224,93,93,0.5)"}`,
+            background: msg.ok ? "rgba(61,217,160,0.1)" : "rgba(224,93,93,0.1)",
+            color: msg.ok ? "#9ff5d2" : "#ffb4b4",
+          }}
+        >
+          {msg.ok ? "✓ " : "✕ "}{msg.text}
+        </div>
+      )}
+
+      <div className="action-grid" style={{ marginBottom: "1rem" }}>
+        <button type="button" className="btn btn-ghost" onClick={() => void load()} disabled={loading}>
+          ⟳ Refresh
+        </button>
+        {items.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={() => void deleteAll()}
+            disabled={!!busy}
+          >
+            Delete all ({items.length})
+          </button>
+        )}
+      </div>
+
+      {loading && <p className="hint"><span className="spinner-inline" aria-hidden /> Loading…</p>}
+
+      {!loading && items.length === 0 && (
+        <div className="quarantine-empty">
+          <p style={{ textAlign: "center", color: "var(--muted)", padding: "2rem 0" }}>
+            No quarantined files. Threats found during scans will appear here.
+          </p>
+        </div>
+      )}
+
+      {!loading && items.length > 0 && (
+        <div className="quarantine-list">
+          {items.map((item) => (
+            <div key={item.name} className="quarantine-item">
+              <div className="quarantine-item-info">
+                <span className="quarantine-item-name" title={item.path}>{item.name}</span>
+                <span className="quarantine-item-meta">
+                  {formatBytes(item.size)} · {new Date(item.quarantinedAt).toLocaleString()}
+                </span>
+              </div>
+              <div className="quarantine-item-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={!!busy}
+                  onClick={() => void restoreItem(item.name)}
+                  title="Restore to Desktop (use only if false positive)"
+                >
+                  Restore
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger btn-sm"
+                  disabled={!!busy}
+                  onClick={() => void deleteItem(item.name)}
+                  title="Permanently delete this file"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CronPanel() {
