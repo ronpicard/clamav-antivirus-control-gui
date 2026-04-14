@@ -1292,6 +1292,507 @@ async function getFirewallStatus() {
   return { active: null, source: "unknown", detail: "Unsupported platform" };
 }
 
+// ─── DNS (resolver presets: OpenDNS, Google, Cloudflare, DHCP, custom) ───────
+
+const DNS_PRESETS = {
+  automatic: { label: "Automatic (router / DHCP)", servers: null },
+  opendns: { label: "OpenDNS", servers: ["208.67.222.222", "208.67.220.220"] },
+  "opendns-family": { label: "OpenDNS FamilyShield", servers: ["208.67.222.123", "208.67.220.123"] },
+  google: { label: "Google Public DNS", servers: ["8.8.8.8", "8.8.4.4"] },
+  cloudflare: { label: "Cloudflare (1.1.1.1)", servers: ["1.1.1.1", "1.0.0.1"] },
+  "cloudflare-family": { label: "Cloudflare for Families (1.1.1.3)", servers: ["1.1.1.3", "1.0.0.3"] },
+  custom: { label: "Custom", servers: null },
+};
+
+const DNS_PRESET_MATCH = (() => {
+  const m = new Map();
+  for (const [id, def] of Object.entries(DNS_PRESETS)) {
+    if (!def.servers?.length) continue;
+    const key = [...def.servers].map((s) => s.trim()).sort().join(",");
+    m.set(key, id);
+  }
+  return m;
+})();
+
+function dnsSortedKey(ips) {
+  return [...new Set((ips || []).map((s) => String(s).trim()))]
+    .filter(Boolean)
+    .sort()
+    .join(",");
+}
+
+function dnsGuessPreset(servers, automatic) {
+  if (automatic || !(servers || []).length) return "automatic";
+  const key = dnsSortedKey(servers);
+  return DNS_PRESET_MATCH.get(key) || "custom";
+}
+
+const DNS_IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
+function dnsNormalizeServersForApply(preset, primary, secondary) {
+  if (preset === "automatic") return [];
+  if (preset === "custom") {
+    const p = String(primary || "").trim();
+    const s = String(secondary || "").trim();
+    if (!DNS_IPV4.test(p)) return { error: "Primary DNS must be a valid IPv4 address." };
+    const out = [p];
+    if (s) {
+      if (!DNS_IPV4.test(s)) return { error: "Secondary DNS must be a valid IPv4 address." };
+      out.push(s);
+    }
+    return { servers: out };
+  }
+  const def = DNS_PRESETS[preset];
+  if (!def?.servers?.length) return { error: "Unknown preset." };
+  return { servers: [...def.servers] };
+}
+
+async function darwinResolveNetworkService() {
+  const route = await execQuick("/sbin/route", ["get", "default"]);
+  let iface = "";
+  if (route.ok) {
+    const m = (route.stdout || "").match(/interface:\s*(\S+)/);
+    if (m) iface = m[1];
+  }
+  if (iface) {
+    const hw = await execQuick("/usr/sbin/networksetup", ["-listhardwareports"]);
+    if (hw.ok) {
+      const chunks = (hw.stdout || "").split(/\n(?=Hardware Port:)/);
+      for (const block of chunks) {
+        const pm = block.match(/Hardware Port:\s*(.+)/);
+        const dm = block.match(/Device:\s*(\S+)/);
+        if (pm && dm && dm[1] === iface) return pm[1].trim();
+      }
+    }
+  }
+  const list = await execQuick("/usr/sbin/networksetup", ["-listallnetworkservices"]);
+  if (!list.ok) return null;
+  const names = (list.stdout || "")
+    .split("\n")
+    .slice(1)
+    .map((l) => l.trim())
+    .filter((n) => n && !n.startsWith("*"));
+  for (const candidate of ["Wi-Fi", "Ethernet", "Thunderbolt Ethernet"]) {
+    if (names.includes(candidate)) return candidate;
+  }
+  return names[0] || null;
+}
+
+async function darwinGetDnsForService(service) {
+  const r = await execQuick("/usr/sbin/networksetup", ["-getdnsservers", service]);
+  if (!r.ok) {
+    return { ok: false, servers: [], automatic: false, raw: (r.stderr || r.stdout || "").trim() };
+  }
+  const out = (r.stdout || "").trim();
+  if (/there aren't any dns servers set on/i.test(out)) {
+    return { ok: true, servers: [], automatic: true, raw: out };
+  }
+  const servers = out
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter((l) => DNS_IPV4.test(l));
+  return { ok: true, servers, automatic: servers.length === 0, raw: out };
+}
+
+async function darwinApplyDns(service, servers) {
+  const bin = "/usr/sbin/networksetup";
+  if (!servers.length) {
+    let r = await execQuick(bin, ["-setdnsservers", service, "Empty"]);
+    if (r.ok) {
+      return { ok: true, elevated: false, stdout: r.stdout, stderr: r.stderr };
+    }
+    const adm = await runDarwinAdminBash(
+      `/usr/sbin/networksetup -setdnsservers ${bashSingleQuote(service)} Empty`,
+      { timeout: 45_000 },
+    );
+    return {
+      ok: adm.ok,
+      elevated: true,
+      stdout: adm.stdout,
+      stderr: adm.stderr,
+    };
+  }
+  let r = await execQuick(bin, ["-setdnsservers", service, ...servers]);
+  if (r.ok) {
+    return { ok: true, elevated: false, stdout: r.stdout, stderr: r.stderr };
+  }
+  const argStr = servers.map((ip) => bashSingleQuote(ip)).join(" ");
+  const adm = await runDarwinAdminBash(
+    `/usr/sbin/networksetup -setdnsservers ${bashSingleQuote(service)} ${argStr}`,
+    { timeout: 45_000 },
+  );
+  return {
+    ok: adm.ok,
+    elevated: true,
+    stdout: adm.stdout,
+    stderr: adm.stderr,
+  };
+}
+
+async function linuxNmcliActiveConnection() {
+  const devR = await execQuick("bash", [
+    "-lc",
+    'ip -4 route show default 2>/dev/null | awk \'{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}\'',
+  ]);
+  const dev = (devR.stdout || "").trim();
+  if (dev) {
+    const list = await execQuick("nmcli", ["-t", "-f", "NAME,DEVICE", "con", "show", "--active"]);
+    if (list.ok) {
+      for (const line of (list.stdout || "").split("\n")) {
+        const idx = line.indexOf(":");
+        if (idx === -1) continue;
+        const name = line.slice(0, idx).trim();
+        const d = line.slice(idx + 1).trim();
+        if (d === dev && name) return name;
+      }
+    }
+  }
+  const r = await execQuick("nmcli", ["-t", "-f", "NAME", "con", "show", "--active"]);
+  if (!r.ok) return null;
+  const line = (r.stdout || "").trim().split("\n").find((l) => l.trim());
+  return line ? line.trim() : null;
+}
+
+async function linuxNmcliGetDns(conName) {
+  const ignore = await execQuick("nmcli", ["-g", "ipv4.ignore-auto-dns", "con", "show", conName]);
+  const dns = await execQuick("nmcli", ["-g", "ipv4.dns", "con", "show", conName]);
+  const ign = String(ignore.stdout || "").trim().toLowerCase() === "yes";
+  const raw = String(dns.stdout || "").trim();
+  const servers = raw
+    ? raw
+        .split(/[\s,|]+/)
+        .map((s) => s.trim())
+        .filter((s) => DNS_IPV4.test(s))
+    : [];
+  const automatic = !ign && servers.length === 0;
+  return { servers, ignoreAuto: ign, automatic, rawOut: raw };
+}
+
+async function linuxNmcliSetDns(conName, servers) {
+  const run = async (cmd, args) => execQuick(cmd, args);
+  if (!servers.length) {
+    let r = await run("nmcli", ["con", "mod", conName, "ipv4.ignore-auto-dns", "no"]);
+    if (!r.ok) return r;
+    r = await run("nmcli", ["con", "mod", conName, "ipv4.dns", ""]);
+    if (!r.ok) return r;
+    return run("nmcli", ["con", "up", conName]);
+  }
+  let r = await run("nmcli", ["con", "mod", conName, "ipv4.ignore-auto-dns", "yes"]);
+  if (!r.ok && ELEVATE_SERVICES) {
+    const pk = await resolvePkexec();
+    if (pk) {
+      r = await run(pk, ["nmcli", "con", "mod", conName, "ipv4.ignore-auto-dns", "yes"]);
+    }
+  }
+  if (!r.ok) return r;
+  r = await run("nmcli", ["con", "mod", conName, "ipv4.dns", servers.join(" ")]);
+  if (!r.ok && ELEVATE_SERVICES) {
+    const pk = await resolvePkexec();
+    if (pk) {
+      r = await run(pk, ["nmcli", "con", "mod", conName, "ipv4.dns", servers.join(" ")]);
+    }
+  }
+  if (!r.ok) return r;
+  r = await run("nmcli", ["con", "up", conName]);
+  if (!r.ok && ELEVATE_SERVICES) {
+    const pk = await resolvePkexec();
+    if (pk) {
+      r = await run(pk, ["nmcli", "con", "up", conName]);
+    }
+  }
+  return r;
+}
+
+async function winListConnectedInterfaces() {
+  const r = await execQuick("netsh", ["interface", "show", "interface"]);
+  if (!r.ok) return [];
+  const names = [];
+  for (const line of (r.stdout || "").split("\n")) {
+    const m = line.match(/^\s*Enabled\s+Connected\s+\S+\s+(.+?)\s*$/i);
+    if (m) names.push(m[1].trim());
+  }
+  return names;
+}
+
+async function winPickInterface() {
+  const names = await winListConnectedInterfaces();
+  if (!names.length) return null;
+  const wifi = names.find((n) => /^wi[- ]?fi$/i.test(n));
+  return wifi || names[0];
+}
+
+async function winGetDnsForInterface(iface) {
+  const r = await execQuick("netsh", ["interface", "ip", "show", "dns", iface]);
+  const out = r.stdout || "";
+  const automatic =
+    /dhcp/i.test(out) && !/statically configured dns servers/i.test(out);
+  const servers = [];
+  let inStatic = false;
+  for (const line of out.split("\n")) {
+    if (/statically configured dns servers/i.test(line)) {
+      inStatic = true;
+      continue;
+    }
+    if (inStatic) {
+      const m = line.match(/(\d{1,3}(?:\.\d{1,3}){3})/g);
+      if (m) servers.push(...m);
+    }
+  }
+  if (!servers.length && automatic) {
+    const m = out.match(/DNS servers[^:]*:\s*([\d. ,]+)/i);
+    if (m) {
+      servers.push(
+        ...m[1]
+          .split(/[,\s]+/)
+          .map((s) => s.trim())
+          .filter((s) => DNS_IPV4.test(s)),
+      );
+    }
+  }
+  const uniq = [...new Set(servers)];
+  return { ok: r.ok, servers: uniq, automatic, raw: out };
+}
+
+async function winApplyDns(iface, servers) {
+  if (!servers.length) {
+    const line = `netsh interface ip set dns name="${iface.replace(/"/g, '\\"')}" dhcp`;
+    return runWindowsElevatedCmdC(line, { timeout: 45_000 });
+  }
+  const safe = iface.replace(/"/g, '\\"');
+  const a = servers[0];
+  const b = servers[1];
+  let cmd = `netsh interface ip set dns name="${safe}" static ${a} validate=no`;
+  if (b) {
+    cmd += ` & netsh interface ip add dns name="${safe}" ${b} index=2 validate=no`;
+  }
+  return runWindowsElevatedCmdC(cmd, { timeout: 45_000 });
+}
+
+async function getDnsStatus() {
+  const pl = process.platform;
+  try {
+    if (pl === "darwin") {
+      const service = await darwinResolveNetworkService();
+      if (!service) {
+        return {
+          supported: true,
+          ok: false,
+          platform: pl,
+          method: "networksetup",
+          service: null,
+          servers: [],
+          automatic: true,
+          matchedPreset: "automatic",
+          displayLabel: DNS_PRESETS.automatic.label,
+          detail: "Could not detect a network service (Wi-Fi / Ethernet).",
+        };
+      }
+      const g = await darwinGetDnsForService(service);
+      const servers = g.servers;
+      const automatic = g.automatic;
+      const matched = dnsGuessPreset(servers, automatic);
+      const displayLabel = automatic
+        ? DNS_PRESETS.automatic.label
+        : matched === "custom"
+          ? `Custom (${servers.join(", ")})`
+          : (DNS_PRESETS[matched]?.label ?? servers.join(", "));
+      return {
+        supported: true,
+        ok: g.ok,
+        platform: pl,
+        method: "networksetup",
+        service,
+        servers,
+        automatic,
+        matchedPreset: matched,
+        displayLabel,
+        detail: g.ok ? "" : g.raw || "Could not read DNS",
+      };
+    }
+    if (pl === "linux") {
+      const which = await execQuick("which", ["nmcli"]);
+      if (!which.ok || !which.stdout.trim()) {
+        return {
+          supported: false,
+          ok: false,
+          platform: pl,
+          method: "none",
+          service: null,
+          servers: [],
+          automatic: true,
+          matchedPreset: "automatic",
+          displayLabel: "—",
+          detail: "nmcli not found. Install NetworkManager or set DNS in system settings.",
+        };
+      }
+      const con = await linuxNmcliActiveConnection();
+      if (!con) {
+        return {
+          supported: true,
+          ok: false,
+          platform: pl,
+          method: "nmcli",
+          service: null,
+          servers: [],
+          automatic: true,
+          matchedPreset: "automatic",
+          displayLabel: DNS_PRESETS.automatic.label,
+          detail: "No active NetworkManager connection.",
+        };
+      }
+      const g = await linuxNmcliGetDns(con);
+      const matched = dnsGuessPreset(g.servers, g.automatic);
+      const displayLabel = g.automatic
+        ? DNS_PRESETS.automatic.label
+        : matched === "custom"
+          ? `Custom (${g.servers.join(", ")})`
+          : (DNS_PRESETS[matched]?.label ?? g.servers.join(", "));
+      return {
+        supported: true,
+        ok: true,
+        platform: pl,
+        method: "nmcli",
+        service: con,
+        servers: g.servers,
+        automatic: g.automatic,
+        matchedPreset: matched,
+        displayLabel,
+        detail: "",
+      };
+    }
+    if (pl === "win32") {
+      const iface = await winPickInterface();
+      if (!iface) {
+        return {
+          supported: true,
+          ok: false,
+          platform: pl,
+          method: "netsh",
+          service: null,
+          servers: [],
+          automatic: true,
+          matchedPreset: "automatic",
+          displayLabel: DNS_PRESETS.automatic.label,
+          detail: "No connected network interface found.",
+        };
+      }
+      const g = await winGetDnsForInterface(iface);
+      const matched = dnsGuessPreset(g.servers, g.automatic);
+      const displayLabel = g.automatic
+        ? DNS_PRESETS.automatic.label
+        : matched === "custom"
+          ? `Custom (${g.servers.join(", ")})`
+          : (DNS_PRESETS[matched]?.label ?? g.servers.join(", "));
+      return {
+        supported: true,
+        ok: g.ok,
+        platform: pl,
+        method: "netsh",
+        service: iface,
+        servers: g.servers,
+        automatic: g.automatic,
+        matchedPreset: matched,
+        displayLabel,
+        detail: g.ok ? "" : "Could not read DNS",
+      };
+    }
+    return {
+      supported: false,
+      ok: false,
+      platform: pl,
+      method: "none",
+      service: null,
+      servers: [],
+      automatic: true,
+      matchedPreset: "automatic",
+      displayLabel: "—",
+      detail: "DNS control is not implemented for this platform.",
+    };
+  } catch (e) {
+    return {
+      supported: false,
+      ok: false,
+      platform: pl,
+      method: "none",
+      service: null,
+      servers: [],
+      automatic: true,
+      matchedPreset: "automatic",
+      displayLabel: "—",
+      detail: String(e.message || e),
+    };
+  }
+}
+
+async function applyDnsPreset(preset, primary, secondary) {
+  const norm = dnsNormalizeServersForApply(preset, primary, secondary);
+  if (norm.error) {
+    return { ok: false, error: norm.error, terminalLogs: [] };
+  }
+  const servers = norm.servers || [];
+  const pl = process.platform;
+  const terminalLogs = [];
+
+  if (pl === "darwin") {
+    const service = await darwinResolveNetworkService();
+    if (!service) {
+      return { ok: false, error: "Could not detect network service.", terminalLogs: [] };
+    }
+    const r = await darwinApplyDns(service, servers);
+    terminalLogs.push(
+      terminalLogEntry({
+        label: "networksetup -setdnsservers",
+        argv: ["/usr/sbin/networksetup", "-setdnsservers", service, ...(servers.length ? servers : ["Empty"])],
+        stdout: r.stdout,
+        stderr: r.stderr,
+        code: r.ok ? 0 : 1,
+        elevated: r.elevated,
+      }),
+    );
+    return {
+      ok: r.ok,
+      error: r.ok ? null : (r.stderr || r.stdout || "networksetup failed").slice(0, 800),
+      elevated: !!r.elevated,
+      terminalLogs,
+    };
+  }
+
+  if (pl === "linux") {
+    const con = await linuxNmcliActiveConnection();
+    if (!con) {
+      return { ok: false, error: "No active NetworkManager connection.", terminalLogs: [] };
+    }
+    const r = await linuxNmcliSetDns(con, servers);
+    terminalLogs.push(
+      logFromExecService("nmcli DNS", "nmcli", ["con", "mod", con, "…"], r),
+    );
+    return {
+      ok: r.ok,
+      error: r.ok ? null : (r.stderr || "nmcli failed").slice(0, 800),
+      terminalLogs,
+    };
+  }
+
+  if (pl === "win32") {
+    const iface = await winPickInterface();
+    if (!iface) {
+      return { ok: false, error: "No connected interface.", terminalLogs: [] };
+    }
+    const r = await winApplyDns(iface, servers);
+    terminalLogs.push(
+      logFromExecService("netsh DNS (elevated)", "cmd", ["/c", "netsh …"], r),
+    );
+    return {
+      ok: r.ok,
+      error: r.ok ? null : (r.stderr || r.stdout || "netsh failed").slice(0, 800),
+      elevated: true,
+      terminalLogs,
+    };
+  }
+
+  return { ok: false, error: "Unsupported platform", terminalLogs: [] };
+}
+
 async function getClamdServiceState() {
   const pl = process.platform;
   if (pl === "linux") {
@@ -1661,18 +2162,84 @@ async function countScanTargets(targetPath) {
   return { total: Math.max(1, count), partial };
 }
 
-function computeScanProgress(s) {
-  if (s.status === "completed") return 100;
-  if (s.status === "cancelled" || s.status === "error") return s.lastProgress ?? 0;
-  if (s.totalFiles && !s.countPartial && s.totalFiles > 0) {
-    return Math.min(99, Math.round((s.filesScanned / s.totalFiles) * 100));
+function recordProgressSample(session) {
+  if (!session.progressSamples) session.progressSamples = [];
+  const now = Date.now();
+  session.progressSamples.push({ t: now, n: session.filesScanned });
+  const cutoff = now - 28000;
+  session.progressSamples = session.progressSamples.filter((s) => s.t >= cutoff);
+}
+
+function estimateFilesPerSecond(session) {
+  const samples = session.progressSamples || [];
+  if (samples.length < 2) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const dtSec = (last.t - first.t) / 1000;
+  if (dtSec < 0.85) return null;
+  const dn = last.n - first.n;
+  if (dn <= 0) return null;
+  return dn / dtSec;
+}
+
+/** @returns {{ progress: number, etaSeconds: number | null, filesPerSecond: number | null, etaConfidence: string }} */
+function computeScanProgressDetails(session) {
+  recordProgressSample(session);
+  const fpsRaw = estimateFilesPerSecond(session);
+  const filesPerSecond = fpsRaw != null ? Math.round(fpsRaw * 10) / 10 : null;
+
+  if (session.status === "completed") {
+    return { progress: 100, etaSeconds: 0, filesPerSecond, etaConfidence: "exact" };
   }
-  const n = s.filesScanned;
-  return Math.min(95, Math.round(8 + (1 - Math.exp(-n / 1800)) * 82));
+  if (session.status === "cancelled" || session.status === "error") {
+    return {
+      progress: session.lastProgress ?? 0,
+      etaSeconds: null,
+      filesPerSecond,
+      etaConfidence: "unknown",
+    };
+  }
+
+  if (session.status === "preparing") {
+    return { progress: 4, etaSeconds: null, filesPerSecond: null, etaConfidence: "unknown" };
+  }
+
+  const total = session.totalFiles;
+  const hasTotal = typeof total === "number" && total > 0;
+  const remaining = hasTotal ? Math.max(0, total - session.filesScanned) : null;
+  const exactTotal = hasTotal && !session.countPartial;
+  let progress;
+  let etaSeconds = null;
+  let etaConfidence = "unknown";
+
+  if (hasTotal) {
+    const ratio = session.filesScanned / total;
+    if (exactTotal) {
+      progress =
+        session.status === "running" ? Math.min(99, Math.round(ratio * 100)) : Math.min(100, Math.round(ratio * 100));
+      etaConfidence = "exact";
+    } else {
+      progress = Math.min(88, Math.round(ratio * 100));
+      etaConfidence = "estimate";
+    }
+    if (fpsRaw != null && fpsRaw > 0.02 && remaining != null && remaining > 0) {
+      etaSeconds = Math.max(0, Math.round(remaining / fpsRaw));
+    }
+  } else {
+    const n = session.filesScanned;
+    progress = Math.min(93, Math.round(6 + (1 - Math.exp(-n / 2600)) * 80));
+    etaConfidence = "estimate";
+    if (fpsRaw != null && fpsRaw > 0.02 && n >= 10) {
+      const adaptiveRemain = Math.max(350, Math.round(n * 0.38));
+      etaSeconds = Math.max(0, Math.round(adaptiveRemain / fpsRaw));
+    }
+  }
+
+  return { progress, etaSeconds, filesPerSecond, etaConfidence };
 }
 
 function buildScanStatePayload(session) {
-  const progress = computeScanProgress(session);
+  const { progress, etaSeconds, filesPerSecond, etaConfidence } = computeScanProgressDetails(session);
   session.lastProgress = progress;
   return {
     type: "state",
@@ -1686,6 +2253,9 @@ function buildScanStatePayload(session) {
     countPartial: session.countPartial,
     progress,
     progressExact: !!(session.totalFiles && !session.countPartial),
+    etaSeconds,
+    etaConfidence,
+    filesPerSecond,
     currentFile: session.currentFile,
     infectedCount: session.infectedCount,
     scanLines: session.scanLines.slice(-200),
@@ -2440,12 +3010,13 @@ app.get("/api/health", async (_req, res) => {
     stderr: String(e),
   }));
   const freshOnPath = !(fresh.stderr || "").includes("ENOENT");
-  const [pingResult, firewall, clamdService, realtime, clamdConn] = await Promise.all([
+  const [pingResult, firewall, clamdService, realtime, clamdConn, dns] = await Promise.all([
     tryClamdPing(),
     getFirewallStatus(),
     getClamdServiceState(),
     getRealtimeProtectionState(),
     parseClamdConnectionFromDisk(),
+    getDnsStatus(),
   ]);
   const daemonResponding = pingResult.ok;
   res.json({
@@ -2458,6 +3029,7 @@ app.get("/api/health", async (_req, res) => {
       pingError: daemonResponding ? null : pingResult.detail || null,
     },
     firewall,
+    dns,
     clamdService: {
       ...clamdService,
       socketOk: daemonResponding,
@@ -2719,6 +3291,29 @@ app.post("/api/actions/realtime", async (req, res) => {
   res.json(r);
 });
 
+app.get("/api/dns/presets", (_req, res) => {
+  res.json({
+    items: Object.entries(DNS_PRESETS).map(([id, v]) => ({ id, label: v.label, servers: v.servers })),
+  });
+});
+
+app.get("/api/dns/status", async (_req, res) => {
+  res.json(await getDnsStatus());
+});
+
+app.post("/api/dns/apply", async (req, res) => {
+  const preset = req.body?.preset;
+  const { primary, secondary } = req.body || {};
+  if (typeof preset !== "string" || !Object.prototype.hasOwnProperty.call(DNS_PRESETS, preset)) {
+    return res.status(400).json({ ok: false, error: "Invalid or missing preset", terminalLogs: [] });
+  }
+  if (preset === "custom" && (primary == null || String(primary).trim() === "")) {
+    return res.status(400).json({ ok: false, error: "Custom preset requires a primary DNS IPv4 address.", terminalLogs: [] });
+  }
+  const r = await applyDnsPreset(preset, primary, secondary);
+  res.json(r);
+});
+
 app.post("/api/actions/firewall", async (req, res) => {
   const action = req.body?.action;
   if (!["on", "off"].includes(action)) {
@@ -2889,6 +3484,7 @@ app.post("/api/scan/start", async (req, res) => {
     infected: false,
     lastProgress: 0,
     lastSsePush: 0,
+    progressSamples: [],
   };
   scanSessions.set(scanId, session);
   res.json({
@@ -3073,6 +3669,83 @@ function jobLineIndices(lines) {
   }
   return out;
 }
+
+async function readCrontabRaw() {
+  try {
+    const r = await execFileAsync("crontab", crontabArgv(["-l"]), {
+      maxBuffer: 2 * 1024 * 1024,
+      cwd: SAFE_CWD,
+    });
+    return r.stdout || "";
+  } catch (e) {
+    if (e.code === 1 && (!e.stdout || String(e.stdout).trim() === "")) return "";
+    throw e;
+  }
+}
+
+async function writeCrontabRaw(nextText) {
+  const next = nextText.endsWith("\n") || nextText === "" ? nextText : `${nextText}\n`;
+  const finalCrontab = next === "" ? "\n" : next;
+  const child = spawn("crontab", crontabArgv(["-"]), { cwd: SAFE_CWD, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.write(finalCrontab);
+  child.stdin.end();
+  let err = "";
+  child.stderr.on("data", (d) => {
+    err += d.toString();
+  });
+  await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (c) => (c === 0 ? resolve() : reject(new Error(err || `exit ${c}`))));
+  });
+}
+
+/** Same defaults as Schedules tab presets; skips any job whose marker comment already exists. */
+async function ensureDefaultClamavCronJobs() {
+  if (process.platform === "win32") {
+    return { ok: true, skipped: true, added: [], detail: "Cron is not used on Windows" };
+  }
+  await fs.mkdir(SCAN_ROOT, { recursive: true });
+  const base = path.resolve(SCAN_ROOT).replace(/[/\\]+$/, "");
+  const freshLog = path.join(base, "freshclam-cron.log");
+  const scanLog = path.join(base, "scheduled-scan.log");
+  const jobs = [
+    {
+      marker: "ClamAV Control: nightly definitions",
+      schedule: "15 2 * * *",
+      command: `freshclam --foreground --stdout >> ${JSON.stringify(freshLog)} 2>&1`,
+      comment: "ClamAV Control: nightly definitions",
+    },
+    {
+      marker: "ClamAV Control: weekly scan",
+      schedule: "30 3 * * 0",
+      command: `clamdscan --fdpass -v ${JSON.stringify(base)} >> ${JSON.stringify(scanLog)} 2>&1 || true`,
+      comment: "ClamAV Control: weekly scan",
+    },
+  ];
+  let current = await readCrontabRaw();
+  const added = [];
+  for (const job of jobs) {
+    if (current.includes(job.marker)) continue;
+    const prefix = `# ${job.comment}\n`;
+    const line = `${prefix}${job.schedule} ${job.command}\n`;
+    current = current.endsWith("\n") || current === "" ? current + line : `${current}\n${line}`;
+    added.push(job.marker);
+  }
+  if (added.length === 0) {
+    return { ok: true, skipped: false, added: [], detail: "Default jobs already in crontab" };
+  }
+  await writeCrontabRaw(current);
+  return { ok: true, skipped: false, added, detail: `Added ${added.length} cron job(s)` };
+}
+
+app.post("/api/cron/ensure-defaults", async (_req, res) => {
+  try {
+    const out = await ensureDefaultClamavCronJobs();
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e), added: [] });
+  }
+});
 
 app.get("/api/cron", async (_req, res) => {
   if (process.platform === "win32") {

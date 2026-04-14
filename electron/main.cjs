@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -98,19 +98,63 @@ async function waitForHealth(port) {
   throw new Error("The local ClamAV GUI server did not start in time.");
 }
 
+function preloadPath() {
+  return path.join(__dirname, "preload.cjs");
+}
+
+/** PNG for dev + window/dock; packaged builds also embed .icns via electron-builder. */
+function resolveWindowIconPath() {
+  const root = projectRoot();
+  const candidates = [];
+  if (app.isPackaged) {
+    candidates.push(path.join(process.resourcesPath, "icon.png"));
+  }
+  candidates.push(path.join(root, "build", "icon.png"), path.join(root, "client", "public", "icon.png"));
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {
+      /* skip */
+    }
+  }
+  return null;
+}
+
+function applyDockAndWindowIcon(win) {
+  const iconPath = resolveWindowIconPath();
+  if (!iconPath) return;
+  try {
+    const img = nativeImage.createFromPath(iconPath);
+    if (img.isEmpty()) return;
+    if (process.platform === "darwin" && app.dock) {
+      app.dock.setIcon(img);
+    }
+    if (win && !win.isDestroyed()) {
+      win.setIcon(img);
+    }
+  } catch (e) {
+    console.warn("ClamAV GUI: could not set icon", e);
+  }
+}
+
 function createWindow() {
+  const iconPath = resolveWindowIconPath();
   const win = new BrowserWindow({
-    width: 1024,
-    height: 800,
+    width: 1120,
+    height: 820,
     minWidth: 720,
     minHeight: 520,
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: preloadPath(),
     },
     show: true,
-    backgroundColor: "#0f1419",
+    backgroundColor: "#0a0e0c",
   });
+
+  applyDockAndWindowIcon(win);
 
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
@@ -135,6 +179,28 @@ function stopServer() {
     serverProcess = null;
   }
 }
+
+ipcMain.handle("clamav:get-open-at-login", () => {
+  try {
+    return app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle("clamav:set-open-at-login", (_event, open) => {
+  const want = !!open;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: want,
+      openAsHidden: false,
+      path: process.execPath,
+    });
+    return app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+});
 
 app.whenReady().then(async () => {
   try {

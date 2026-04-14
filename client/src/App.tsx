@@ -11,6 +11,18 @@ type Health = {
     pingError?: string | null;
   };
   firewall?: { active: boolean | null; source: string; detail: string };
+  dns?: {
+    supported: boolean;
+    ok: boolean;
+    platform?: string;
+    method?: string;
+    service?: string | null;
+    servers: string[];
+    automatic?: boolean;
+    matchedPreset?: string;
+    displayLabel: string;
+    detail?: string;
+  };
   clamdService?: {
     running: boolean;
     unit: string | null;
@@ -140,12 +152,14 @@ function TerminalOutputPanel({ logs }: { logs: TerminalLogEntry[] }) {
 const TABS = [
   ["home", "Dashboard", "📊", "See what is working and refresh ClamAV"],
   ["realtime", "Real-time", "🛡️", "Monitor files in real time"],
-  ["auto-install", "Auto-install", "📦", "Install ClamAV — guided on Mac + Homebrew"],
   ["scan", "Scan", "🔎", "Scan files with live progress"],
   ["quarantine", "Quarantine", "🔒", "View and manage quarantined threats"],
   ["cron", "Schedules", "⏰", "Automate updates and scans (Mac/Linux)"],
   ["config", "Config", "⚙️", "Edit clamd and freshclam settings"],
+  ["dns", "DNS", "🌐", "DNS resolver: OpenDNS, Google, Cloudflare, DHCP, custom"],
+  ["settings", "Settings", "🔧", "App preferences"],
   ["instructions", "Instructions", "📖", "Install ClamAV and use this app"],
+  ["auto-install", "Auto-install", "📦", "Install ClamAV — guided on Mac + Homebrew"],
 ] as const;
 
 type ScanSessionState = {
@@ -168,6 +182,30 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [scanSession, setScanSession] = useState<ScanSessionState>(EMPTY_SCAN_SESSION);
+  const [autoStartRealtime, setAutoStartRealtime] = useState(() => {
+    try {
+      return localStorage.getItem("clamav-autort-realtime") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [autoStartDaemon, setAutoStartDaemon] = useState(() => {
+    try {
+      return localStorage.getItem("clamav-autostart-daemon") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [autoEnsureCronDefaults, setAutoEnsureCronDefaults] = useState(() => {
+    try {
+      return localStorage.getItem("clamav-autostart-cron") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const autoRtAttemptedRef = useRef(false);
+  const autoDaemonAttemptedRef = useRef(false);
+  const autoCronAttemptedRef = useRef(false);
 
   const refresh = useCallback(async (silent?: boolean) => {
     if (!silent) setLoading(true);
@@ -187,66 +225,288 @@ export default function App() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!autoStartRealtime) {
+      autoRtAttemptedRef.current = false;
+    }
+  }, [autoStartRealtime]);
+
+  useEffect(() => {
+    if (err || !health || !autoStartRealtime) return;
+    if (health.realtimeMonitor?.running) return;
+    if (autoRtAttemptedRef.current) return;
+    autoRtAttemptedRef.current = true;
+    void (async () => {
+      try {
+        const r = await api("/api/realtime/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const j = (await r.json()) as { ok?: boolean };
+        if (j.ok) {
+          await refresh(true);
+        } else {
+          autoRtAttemptedRef.current = false;
+        }
+      } catch {
+        autoRtAttemptedRef.current = false;
+      }
+    })();
+  }, [health, err, autoStartRealtime, refresh]);
+
+  useEffect(() => {
+    if (!autoStartDaemon) {
+      autoDaemonAttemptedRef.current = false;
+    }
+  }, [autoStartDaemon]);
+
+  useEffect(() => {
+    if (err || !health || !autoStartDaemon) return;
+    if (health.clamav?.daemonResponding) return;
+    if (autoDaemonAttemptedRef.current) return;
+    autoDaemonAttemptedRef.current = true;
+    void (async () => {
+      try {
+        const r = await api("/api/actions/clamd-service", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start" }),
+        });
+        const j = (await r.json()) as { ok?: boolean };
+        if (j.ok) {
+          await refresh(true);
+        } else {
+          autoDaemonAttemptedRef.current = false;
+        }
+      } catch {
+        autoDaemonAttemptedRef.current = false;
+      }
+    })();
+  }, [health, err, autoStartDaemon, refresh]);
+
+  useEffect(() => {
+    if (!autoEnsureCronDefaults) {
+      autoCronAttemptedRef.current = false;
+    }
+  }, [autoEnsureCronDefaults]);
+
+  useEffect(() => {
+    if (err || !health || !autoEnsureCronDefaults) return;
+    if (autoCronAttemptedRef.current) return;
+    autoCronAttemptedRef.current = true;
+    void (async () => {
+      try {
+        const r = await api("/api/cron/ensure-defaults", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const j = (await r.json()) as { ok?: boolean; skipped?: boolean };
+        if (!r.ok || j.ok === false) {
+          autoCronAttemptedRef.current = false;
+        }
+      } catch {
+        autoCronAttemptedRef.current = false;
+      }
+    })();
+  }, [health, err, autoEnsureCronDefaults]);
+
   return (
-    <>
-      <header className="app-header">
-        <div className="brand-row">
-          <div className="brand-icon" aria-hidden>
-            🛡️
+    <div className="app-shell">
+        <header className="app-header">
+          <div className="brand-row">
+            <div className="brand-icon" aria-hidden>
+              <img src="/icon.png" alt="" width={28} height={28} className="brand-icon-img" />
+            </div>
+            <div>
+              <h1>ClamAV Control</h1>
+              <p className="subtitle">Antivirus dashboard for your computer</p>
+            </div>
           </div>
-          <div>
-            <h1>ClamAV Control</h1>
-            <p className="subtitle">Antivirus dashboard for your computer</p>
-          </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="nav-shell">
-        <nav className="tabs" aria-label="Main sections">
-          {TABS.map(([id, label, emoji, title]) => (
-            <button
-              key={id}
-              type="button"
-              className={`tab ${tab === id ? "active" : ""}`}
-              onClick={() => setTab(id)}
-              title={title}
-              aria-current={tab === id ? "page" : undefined}
-            >
-              <span className="tab-emoji" aria-hidden>
-                {emoji}
-              </span>
-              {label}
+        <div className="nav-shell">
+          <nav className="tabs" aria-label="Main sections">
+            {TABS.map(([id, label, emoji, title]) => (
+              <button
+                key={id}
+                type="button"
+                className={`tab ${tab === id ? "active" : ""}`}
+                onClick={() => setTab(id)}
+                title={title}
+                aria-current={tab === id ? "page" : undefined}
+              >
+                <span className="tab-emoji" aria-hidden>
+                  {emoji}
+                </span>
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {err && (
+          <div className="card card-error" role="alert">
+            <h2 style={{ color: "var(--danger)", marginBottom: "0.5rem" }}>Cannot reach the app</h2>
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.9rem" }}>{err}</p>
+            <button type="button" className="btn btn-primary" style={{ marginTop: "1rem" }} onClick={refresh}>
+              Try again
             </button>
-          ))}
-        </nav>
-      </div>
+          </div>
+        )}
 
-      {err && (
-        <div className="card card-error" role="alert">
-          <h2 style={{ color: "var(--danger)", marginBottom: "0.5rem" }}>Cannot reach the app</h2>
-          <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.9rem" }}>{err}</p>
-          <button type="button" className="btn btn-primary" style={{ marginTop: "1rem" }} onClick={refresh}>
-            Try again
-          </button>
+        <div
+          className={`panel-wrap panel-wrap-flex ${tab === "scan" ? "scan-panel-hidden" : ""}`}
+          key={tab === "scan" ? "scan-persistent" : tab}
+        >
+          {tab === "home" && <Dashboard health={health} loading={loading} onRefresh={refresh} />}
+          {tab === "realtime" && <RealtimePanel health={health} onRefresh={refresh} />}
+          {tab === "auto-install" && <AutoInstallPanel health={health} onRefreshAll={refresh} />}
+          {tab === "quarantine" && <QuarantinePanel />}
+          {tab === "cron" && <CronPanel />}
+          {tab === "config" && <ConfigPanel />}
+          {tab === "dns" && <DnsPanel health={health} onRefresh={refresh} />}
+          {tab === "settings" && (
+            <SettingsPanel
+              health={health}
+              loading={loading}
+              connectionErr={err}
+              autoStartRealtime={autoStartRealtime}
+              onAutoStartRealtimeChange={setAutoStartRealtime}
+              autoStartDaemon={autoStartDaemon}
+              onAutoStartDaemonChange={setAutoStartDaemon}
+              autoEnsureCronDefaults={autoEnsureCronDefaults}
+              onAutoEnsureCronDefaultsChange={setAutoEnsureCronDefaults}
+              onRefresh={refresh}
+            />
+          )}
+          {tab === "instructions" && <InstructionsPanel />}
         </div>
-      )}
-
-      <div className="panel-wrap" key={tab === "scan" ? "scan-persistent" : tab}>
-        {tab === "home" && <Dashboard health={health} loading={loading} onRefresh={refresh} />}
-        {tab === "realtime" && <RealtimePanel health={health} onRefresh={refresh} />}
-        {tab === "auto-install" && <AutoInstallPanel health={health} onRefreshAll={refresh} />}
-        {tab === "quarantine" && <QuarantinePanel />}
-        {tab === "cron" && <CronPanel />}
-        {tab === "config" && <ConfigPanel />}
-        {tab === "instructions" && <InstructionsPanel />}
-      </div>
-      <div style={tab === "scan" ? undefined : { display: "none" }}>
-        <div className="panel-wrap">
+        <div className={`panel-wrap panel-wrap-flex ${tab === "scan" ? "" : "scan-panel-hidden"}`}>
           <ScanPanel health={health} session={scanSession} setSession={setScanSession} onRefresh={refresh} />
         </div>
-      </div>
-    </>
+    </div>
   );
+}
+
+function DashboardRealtimeControls({
+  running,
+  onRefresh,
+  controlsDisabled,
+}: {
+  running: boolean;
+  onRefresh: (silent?: boolean) => void | Promise<void>;
+  controlsDisabled?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const block = !!(controlsDisabled || busy);
+
+  const start = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api("/api/realtime/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const j = await r.json();
+      if (j.ok) {
+        setMsg({ ok: true, text: `Real-time started (${j.method})` });
+        void onRefresh(true);
+      } else {
+        setMsg({ ok: false, text: j.error || "Failed to start" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stop = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api("/api/realtime/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const j = await r.json();
+      if (j.ok) {
+        setMsg({ ok: true, text: "Real-time stopped" });
+        void onRefresh(true);
+      } else {
+        setMsg({ ok: false, text: j.error || "Failed to stop" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dash-section">
+      <p className="section-label">Real-time folder monitor</p>
+      <p className="hint" style={{ margin: "0 0 0.65rem", fontSize: "0.82rem" }}>
+        Same as the Real-time tab — watches key folders and scans new or changed files.
+      </p>
+      {msg && (
+        <div
+          className={`action-banner fade-in ${msg.ok ? "ok" : "err"}`}
+          role="status"
+          style={{ marginBottom: "0.65rem" }}
+        >
+          {msg.ok ? "✓ " : "✕ "}
+          {msg.text}
+        </div>
+      )}
+      <div className="action-grid">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={block || running}
+          onClick={() => void start()}
+        >
+          {busy && !running ? (
+            <>
+              <span className="spinner-inline" aria-hidden />
+              Starting…
+            </>
+          ) : (
+            "Enable"
+          )}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={block || !running}
+          onClick={() => void stop()}
+        >
+          {busy && running ? (
+            <>
+              <span className="spinner-inline" aria-hidden />
+              Stopping…
+            </>
+          ) : (
+            "Disable"
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function dnsDashboardLine(dns: Health["dns"] | undefined): { text: string; title: string } {
+  if (!dns) return { text: "—", title: "" };
+  const title = [dns.displayLabel, dns.service && `Interface: ${dns.service}`, dns.detail].filter(Boolean).join("\n");
+  if (!dns.supported) return { text: "—", title: title || dns.detail || "" };
+  if (dns.automatic || !(dns.servers && dns.servers.length)) return { text: "DHCP", title };
+  return { text: dns.servers.join(", "), title };
 }
 
 function Dashboard({
@@ -465,7 +725,9 @@ function Dashboard({
     .filter(Boolean)
     .join(" — ");
 
-  const allGreen = c?.freshclamInstalled && c?.clamdscanInstalled && daemonResponding;
+  const dns = health?.dns;
+  const dnsPillOk = dns?.supported && dns.ok !== false;
+  const dnsSummary = dnsDashboardLine(dns);
 
   return (
     <div className="card fade-in">
@@ -509,13 +771,21 @@ function Dashboard({
               Real-time
               <span className="status-pill-muted">{health.realtimeMonitor?.running ? "active" : "off"}</span>
             </span>
+            <span
+              className={`status-pill ${dnsPillOk ? "ok" : dns?.supported === false ? "bad" : "wait"}`}
+              title={dnsSummary.title || undefined}
+            >
+              <span className="dot" aria-hidden />
+              DNS
+              <span className="status-pill-muted dns-pill-nums">{dnsSummary.text}</span>
+            </span>
           </div>
 
-          {allGreen && (
-            <div className="success-banner fade-in">
-              All systems operational — ClamAV is ready.
-            </div>
-          )}
+          <DashboardRealtimeControls
+            running={!!health.realtimeMonitor?.running}
+            onRefresh={onRefresh}
+            controlsDisabled={svcBusy || !!busy || defStreaming}
+          />
 
           {svcBanner && (
             <div className={`action-banner fade-in ${svcBanner.ok ? "ok" : "err"}`} role="status">
@@ -892,6 +1162,9 @@ type ScanStreamState = {
   countPartial: boolean;
   progress: number;
   progressExact: boolean;
+  etaSeconds?: number | null;
+  etaConfidence?: string;
+  filesPerSecond?: number | null;
   currentFile: string;
   infectedCount: number;
   scanLines?: ScanLine[];
@@ -901,6 +1174,19 @@ type ScanStreamState = {
   spawnError?: string | null;
   findings?: string[];
 };
+
+function formatScanEta(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "";
+  const s = Math.round(seconds);
+  if (s <= 0) return "";
+  if (s < 120) return `~${s}s remaining`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 120) return `~${m}m ${rs}s remaining`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `~${h}h ${rm}m remaining`;
+}
 
 type ScanHistoryEntry = {
   id: string;
@@ -1094,6 +1380,15 @@ function ScanPanel({
   const indeterminate = running && live && !live.progressExact && live.status !== "preparing";
   const showProgress = running || !!finished;
   const scanLines = live?.scanLines ?? [];
+  const etaText =
+    running && live && live.status !== "preparing" && (live.etaSeconds ?? 0) > 0
+      ? formatScanEta(live.etaSeconds)
+      : "";
+  const etaApprox = live?.etaConfidence === "estimate";
+  const fpsText =
+    live?.filesPerSecond != null && live.filesPerSecond > 0
+      ? `${live.filesPerSecond.toLocaleString()} files/s`
+      : "";
 
   const summaryStatusCls =
     live?.status === "completed" && live.infectedCount === 0
@@ -1201,23 +1496,48 @@ function ScanPanel({
 
       {showProgress && (
         <div className="scan-progress-wrap">
-          <div className="scan-progress-meta">
-            <span>
-              <strong>{progress}%</strong>
-            </span>
-            <span>
-              {live?.progressExact && live.totalFiles != null
-                ? `${live.filesScanned.toLocaleString()} / ${live.totalFiles.toLocaleString()} files`
-                : `${(live?.filesScanned ?? 0).toLocaleString()} files scanned`}
-              {(live?.infectedCount ?? 0) > 0 && (
-                <> · <span style={{ color: "var(--danger)", fontWeight: 600 }}>{live!.infectedCount} threat{live!.infectedCount !== 1 ? "s" : ""}</span></>
+          <div className="scan-progress-meta scan-progress-meta-stack">
+            <div className="scan-progress-row">
+              <span>
+                <strong>{finished && live?.status === "completed" ? 100 : progress}%</strong>
+                {!live?.progressExact && running && live?.status === "running" && (
+                  <span className="scan-progress-badge">estimate</span>
+                )}
+              </span>
+              <span>
+                {live?.progressExact && live.totalFiles != null
+                  ? `${live.filesScanned.toLocaleString()} / ${live.totalFiles.toLocaleString()} files`
+                  : `${(live?.filesScanned ?? 0).toLocaleString()} files scanned`}
+                {(live?.infectedCount ?? 0) > 0 && (
+                  <>
+                    {" "}
+                    ·{" "}
+                    <span style={{ color: "var(--danger)", fontWeight: 600 }}>
+                      {live!.infectedCount} threat{live!.infectedCount !== 1 ? "s" : ""}
+                    </span>
+                  </>
+                )}
+              </span>
+            </div>
+            <div className="scan-progress-sub">
+              {etaText && (
+                <span>
+                  {etaText}
+                  {etaApprox ? " (approx.)" : ""}
+                </span>
               )}
-            </span>
+              {fpsText && (
+                <span className="scan-progress-fps">{fpsText}</span>
+              )}
+              {indeterminate && !etaText && running && (
+                <span className="scan-progress-sub-muted">Calibrating speed and ETA…</span>
+              )}
+            </div>
           </div>
           <div className="scan-progress-track">
             <div
               className={`scan-progress-fill ${indeterminate ? "indeterminate" : ""}`}
-              style={indeterminate ? undefined : { width: `${Math.max(2, progress)}%` }}
+              style={indeterminate ? undefined : { width: `${Math.min(100, Math.max(2, progress))}%` }}
             />
           </div>
         </div>
@@ -1269,6 +1589,361 @@ function ScanPanel({
           </ul>
         </>
       )}
+    </div>
+  );
+}
+
+function SettingsPanel({
+  health,
+  loading,
+  connectionErr,
+  autoStartRealtime,
+  onAutoStartRealtimeChange,
+  autoStartDaemon,
+  onAutoStartDaemonChange,
+  autoEnsureCronDefaults,
+  onAutoEnsureCronDefaultsChange,
+  onRefresh,
+}: {
+  health: Health | null;
+  loading: boolean;
+  connectionErr: string | null;
+  autoStartRealtime: boolean;
+  onAutoStartRealtimeChange: (v: boolean) => void;
+  autoStartDaemon: boolean;
+  onAutoStartDaemonChange: (v: boolean) => void;
+  autoEnsureCronDefaults: boolean;
+  onAutoEnsureCronDefaultsChange: (v: boolean) => void;
+  onRefresh: (silent?: boolean) => void | Promise<void>;
+}) {
+  const [openAtLogin, setOpenAtLogin] = useState(false);
+  const [loginLoaded, setLoginLoaded] = useState(false);
+  const electron = typeof window !== "undefined" && window.clamavGUI?.isElectron;
+
+  useEffect(() => {
+    if (!electron || !window.clamavGUI) return;
+    void window.clamavGUI.getOpenAtLogin().then((v) => {
+      setOpenAtLogin(!!v);
+      setLoginLoaded(true);
+    });
+  }, [electron]);
+
+  return (
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>Settings</h2>
+      <p className="hint" style={{ marginBottom: "1.25rem" }}>
+        Application preferences. ClamAV engine files are edited under the <strong>Config</strong> tab.
+      </p>
+
+      <div className="settings-block">
+        <p className="section-label">Connection</p>
+        <p className="hint" style={{ marginBottom: "0.5rem" }}>
+          {connectionErr ? (
+            <span style={{ color: "var(--danger)" }}>Cannot reach the local app server.</span>
+          ) : loading && !health ? (
+            "Loading…"
+          ) : health ? (
+            <>
+              OK · definitions {health.clamav?.freshclamInstalled ? "ready" : "missing"} · daemon{" "}
+              {health.clamav?.daemonResponding ? "online" : "offline"}
+            </>
+          ) : (
+            "—"
+          )}
+        </p>
+        <button type="button" className="btn btn-primary" disabled={!!connectionErr} onClick={() => void onRefresh()}>
+          ↻ Refresh status
+        </button>
+      </div>
+
+      <div className="settings-block">
+        <p className="section-label">Real-time folder monitor</p>
+        <label className="settings-check-row">
+          <input
+            type="checkbox"
+            checked={autoStartRealtime}
+            onChange={(e) => {
+              const v = e.target.checked;
+              onAutoStartRealtimeChange(v);
+              try {
+                localStorage.setItem("clamav-autort-realtime", v ? "1" : "0");
+              } catch {
+                /* ignore */
+              }
+            }}
+          />
+          <span>Start monitoring automatically when this app opens</span>
+        </label>
+      </div>
+
+      <div className="settings-block">
+        <p className="section-label">ClamAV daemon</p>
+        <label className="settings-check-row">
+          <input
+            type="checkbox"
+            checked={autoStartDaemon}
+            onChange={(e) => {
+              const v = e.target.checked;
+              onAutoStartDaemonChange(v);
+              try {
+                localStorage.setItem("clamav-autostart-daemon", v ? "1" : "0");
+              } catch {
+                /* ignore */
+              }
+            }}
+          />
+          <span>
+            When this app opens, try to start the ClamAV scanner daemon if it is not running (same as Dashboard →
+            Start).
+          </span>
+        </label>
+        <p className="hint" style={{ margin: "0.5rem 0 0 1.5rem" }}>
+          Runs once per app launch. You may be prompted for an administrator password on macOS/Linux if your setup
+          requires it.
+        </p>
+      </div>
+
+      <div className="settings-block">
+        <p className="section-label">Scheduled jobs (cron)</p>
+        <label className="settings-check-row">
+          <input
+            type="checkbox"
+            checked={autoEnsureCronDefaults}
+            onChange={(e) => {
+              const v = e.target.checked;
+              onAutoEnsureCronDefaultsChange(v);
+              try {
+                localStorage.setItem("clamav-autostart-cron", v ? "1" : "0");
+              } catch {
+                /* ignore */
+              }
+            }}
+          />
+          <span>
+            When this app opens, ensure the default cron jobs exist (nightly <code>freshclam</code> + weekly{" "}
+            <code>clamdscan</code> of your scan folder — same presets as the Schedules tab).
+          </span>
+        </label>
+        <p className="hint" style={{ margin: "0.5rem 0 0 1.5rem" }}>
+          <strong>macOS / Linux only.</strong> Skips jobs that are already in your crontab. Not available on Windows.
+        </p>
+      </div>
+
+      {electron ? (
+        <div className="settings-block">
+          <p className="section-label">Desktop (Electron)</p>
+          <label className="settings-check-row">
+            <input
+              type="checkbox"
+              checked={openAtLogin}
+              disabled={!loginLoaded}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setOpenAtLogin(v);
+                void window.clamavGUI?.setOpenAtLogin(v).then((ok) => setOpenAtLogin(!!ok));
+              }}
+            />
+            <span>Open this app at login</span>
+          </label>
+        </div>
+      ) : (
+        <p className="hint" style={{ marginTop: "1rem" }}>
+          “Open at login” is available in the desktop (Electron) build.
+        </p>
+      )}
+    </div>
+  );
+}
+
+type DnsPresetRow = { id: string; label: string; servers: string[] | null };
+
+function DnsPanel({
+  health,
+  onRefresh,
+}: {
+  health: Health | null;
+  onRefresh: (silent?: boolean) => void | Promise<void>;
+}) {
+  const [presets, setPresets] = useState<DnsPresetRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const [cmdLogs, setCmdLogs] = useState<TerminalLogEntry[]>([]);
+  const [customPri, setCustomPri] = useState("1.1.1.1");
+  const [customSec, setCustomSec] = useState("1.0.0.1");
+
+  const dns = health?.dns;
+
+  useEffect(() => {
+    void api("/api/dns/presets")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j?.items && Array.isArray(j.items)) setPresets(j.items);
+      })
+      .catch(() => {});
+  }, []);
+
+  const apply = async (preset: string) => {
+    setBusy(true);
+    setBanner(null);
+    setCmdLogs([]);
+    try {
+      const body: Record<string, string> = { preset };
+      if (preset === "custom") {
+        body.primary = customPri.trim();
+        if (customSec.trim()) body.secondary = customSec.trim();
+      }
+      const r = await api("/api/dns/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = (await r.json()) as {
+        ok?: boolean;
+        error?: string;
+        terminalLogs?: TerminalLogEntry[];
+        elevated?: boolean;
+      };
+      const tl = Array.isArray(j.terminalLogs) ? j.terminalLogs : [];
+      setCmdLogs(tl);
+      if (!r.ok || !j.ok) {
+        setBanner({ ok: false, text: j.error || `Request failed (${r.status})` });
+        return;
+      }
+      setBanner({
+        ok: true,
+        text: j.elevated ? "DNS updated (administrator approval was used)." : "DNS updated.",
+      });
+      await onRefresh(true);
+    } catch (e) {
+      setBanner({ ok: false, text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const presetCards = presets.filter((p) => p.id !== "custom");
+
+  return (
+    <div className="card fade-in">
+      <h2 style={{ marginBottom: "0.25rem" }}>DNS resolver</h2>
+      <p className="hint" style={{ marginBottom: "1rem" }}>
+        Switch IPv4 DNS for your active network (Wi‑Fi / Ethernet). <strong>Automatic</strong> uses your router /
+        DHCP. On macOS and Windows, changing DNS may prompt for an administrator password. Linux uses{" "}
+        <code>nmcli</code> (NetworkManager).
+      </p>
+
+      {dns && !dns.supported && (
+        <div className="warning-banner" role="status">
+          {dns.detail || "DNS control is not available on this system from this app."}
+        </div>
+      )}
+
+      {dns && dns.supported && (
+        <div className="dns-current-card">
+          <p className="section-label" style={{ marginBottom: "0.35rem" }}>
+            Current
+          </p>
+          <p className="dns-current-label">{dns.displayLabel}</p>
+          {dns.service && (
+            <p className="hint" style={{ margin: "0.25rem 0 0" }}>
+              Interface / connection: <code>{dns.service}</code> · via {dns.method}
+            </p>
+          )}
+          {!dns.automatic && dns.servers.length > 0 && (
+            <p className="hint" style={{ margin: "0.35rem 0 0" }}>
+              Servers: <code>{dns.servers.join(", ")}</code>
+            </p>
+          )}
+          {dns.detail ? (
+            <p className="hint" style={{ margin: "0.35rem 0 0", color: "var(--warn)" }}>
+              {dns.detail}
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {banner && (
+        <div className={`action-banner fade-in ${banner.ok ? "ok" : "err"}`} role="status">
+          {banner.ok ? "✓ " : "✕ "}
+          {banner.text}
+        </div>
+      )}
+
+      <p className="section-label" style={{ marginTop: "1rem" }}>
+        Presets
+      </p>
+      <div className="dns-preset-grid">
+        {presetCards.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className={`scan-mode-card ${dns?.matchedPreset === p.id ? "selected" : ""}`}
+            disabled={busy || !dns?.supported}
+            title={p.servers ? p.servers.join(", ") : ""}
+            onClick={() => void apply(p.id)}
+          >
+            <span className="scan-mode-icon">🌐</span>
+            <strong>{p.label}</strong>
+            {p.servers && <span className="scan-mode-hint">{p.servers.join(" · ")}</span>}
+          </button>
+        ))}
+      </div>
+
+      <p className="section-label" style={{ marginTop: "1rem" }}>
+        Custom IPv4
+      </p>
+      <div className="dns-custom-row">
+        <label className="dns-field">
+          Primary
+          <input
+            type="text"
+            value={customPri}
+            onChange={(e) => setCustomPri(e.target.value)}
+            placeholder="e.g. 1.1.1.1"
+            spellCheck={false}
+            disabled={busy}
+          />
+        </label>
+        <label className="dns-field">
+          Secondary (optional)
+          <input
+            type="text"
+            value={customSec}
+            onChange={(e) => setCustomSec(e.target.value)}
+            placeholder="e.g. 1.0.0.1"
+            spellCheck={false}
+            disabled={busy}
+          />
+        </label>
+        <button
+          type="button"
+          className="btn btn-primary dns-custom-apply"
+          disabled={busy || !dns?.supported}
+          onClick={() => void apply("custom")}
+        >
+          Apply custom
+        </button>
+      </div>
+
+      <div style={{ marginTop: "1rem" }}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={busy || !dns?.supported}
+          onClick={() => void apply("automatic")}
+        >
+          ↺ Reset to automatic (DHCP / router DNS)
+        </button>
+      </div>
+
+      {busy && (
+        <p className="hint" style={{ marginTop: "0.75rem" }}>
+          <span className="spinner-inline" aria-hidden />
+          Applying…
+        </p>
+      )}
+
+      <TerminalOutputPanel logs={cmdLogs} />
     </div>
   );
 }
@@ -1652,6 +2327,8 @@ function InstructionsPanel() {
             <dt>Quarantine</dt><dd>Review, restore, or delete quarantined files.</dd>
             <dt>Schedules</dt><dd>Cron jobs for automatic updates and scans (macOS/Linux).</dd>
             <dt>Config</dt><dd>Edit ClamAV config files in Guided or Raw mode.</dd>
+            <dt>DNS</dt><dd>Optional resolver presets (OpenDNS, Google, Cloudflare, DHCP, custom) for the active network.</dd>
+            <dt>Settings</dt><dd>Refresh status, auto-start real-time monitoring, optional daemon/cron setup on app open, open-at-login (desktop).</dd>
           </dl>
         </div>
       </details>

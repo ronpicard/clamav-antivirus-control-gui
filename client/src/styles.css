@@ -83,16 +83,95 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(ellipse 100% 70% at 50% -15%, rgba(45, 90, 75, 0.45) 0%, transparent 55%),
-    radial-gradient(ellipse 80% 50% at 100% 50%, rgba(30, 60, 80, 0.2) 0%, transparent 45%), var(--bg);
+  position: relative;
+  background: var(--bg);
+}
+
+.app-shell {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: min(1280px, 100%);
+  margin: 0 auto;
+  padding: 0.35rem clamp(0.65rem, 2vw, 1.25rem) clamp(1rem, 3vw, 2rem);
+  box-sizing: border-box;
+  background: radial-gradient(ellipse 100% 70% at 50% -15%, rgba(45, 90, 75, 0.35) 0%, transparent 55%),
+    radial-gradient(ellipse 80% 50% at 100% 50%, rgba(30, 60, 80, 0.15) 0%, transparent 45%),
+    linear-gradient(180deg, rgba(12, 16, 20, 0.92) 0%, rgba(12, 16, 20, 0.72) 100%);
+  border-radius: 0 0 20px 20px;
 }
 
 #root {
   width: 100%;
-  max-width: min(960px, 100%);
-  margin: 0 auto;
-  padding: clamp(1rem, 2.5vw, 1.5rem) clamp(0.75rem, 2vw, 1.25rem) clamp(2rem, 5vw, 3rem);
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   animation: fade-in 0.5s var(--ease-out) both;
+}
+
+.settings-block {
+  margin-bottom: 1.35rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-block:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.settings-check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-check-row input {
+  margin-top: 0.2rem;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.dns-pill-nums {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.72rem !important;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.panel-wrap-flex {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: min(calc(100vh - 118px), 900px);
+}
+
+.panel-wrap-flex > .card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: min(calc(100vh - 128px), 880px);
+  margin-bottom: 0;
+  overflow: auto;
+}
+
+.scan-panel-hidden {
+  display: none !important;
 }
 
 .app-header {
@@ -124,6 +203,14 @@ body {
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-glow);
 }
 
+.brand-icon-img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
 h1 {
   font-size: clamp(1.35rem, 2.8vw, 1.65rem);
   font-weight: 700;
@@ -133,7 +220,7 @@ h1 {
 
 .subtitle {
   color: var(--muted);
-  margin: 0 0 1.5rem;
+  margin: 0 0 1rem;
   font-size: clamp(0.85rem, 1.6vw, 0.92rem);
   max-width: min(38rem, 100%);
   line-height: 1.55;
@@ -923,6 +1010,54 @@ details.advanced summary {
   animation: fade-up 0.25s var(--ease-out) both;
 }
 
+.dns-current-card {
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dns-current-label {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.dns-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+.dns-custom-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.dns-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  flex: 1 1 160px;
+}
+
+.dns-field input {
+  width: 100%;
+}
+
+.dns-custom-apply {
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+
 .scan-progress-wrap {
   margin: 1rem 0;
 }
@@ -943,6 +1078,52 @@ details.advanced summary {
   font-size: 0.9rem;
 }
 
+.scan-progress-meta-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.scan-progress-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.scan-progress-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.scan-progress-sub-muted {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.scan-progress-fps {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.scan-progress-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.12rem 0.4rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 6px;
+  background: rgba(61, 217, 160, 0.15);
+  color: var(--accent);
+  vertical-align: middle;
+}
+
 .scan-progress-track {
   height: 12px;
   border-radius: 999px;
@@ -956,7 +1137,7 @@ details.advanced summary {
   min-width: 4px;
   border-radius: 999px;
   background: linear-gradient(90deg, var(--accent-dim), var(--accent));
-  transition: width 0.35s var(--ease-out);
+  transition: width 0.55s cubic-bezier(0.22, 1, 0.36, 1);
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
@@ -976,7 +1157,9 @@ details.advanced summary {
 
 /* Scan live log viewer */
 .scan-log-viewer {
-  max-height: min(52vh, 420px);
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: min(48vh, 480px);
   overflow-y: auto;
   overflow-x: hidden;
   background: #080c10;

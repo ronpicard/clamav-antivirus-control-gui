@@ -30,6 +30,10 @@
     ],
     "extraResources": [
       {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
         "from": "server",
         "to": "server",
         "filter": [
@@ -42,6 +46,7 @@
         "to": "client/dist"
       }
     ],
+    "icon": "build/icon.png",
     "mac": {
       "category": "public.app-category.utilities",
       "target": [
