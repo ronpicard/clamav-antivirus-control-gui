@@ -7,6 +7,7 @@
   "description": "Desktop UI for ClamAV configuration (Electron)",
   "main": "electron/main.cjs",
   "scripts": {
+    "render-icon": "node scripts/render-app-icon.mjs",
     "build:client": "npm run build --prefix client",
     "prepare:server": "npm ci --prefix server --omit=dev",
     "electron": "npm run build:client && electron .",
@@ -15,7 +16,8 @@
   },
   "devDependencies": {
     "electron": "^33.4.11",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "sharp": "^0.34.5"
   },
   "build": {
     "appId": "dev.clamav.gui",
