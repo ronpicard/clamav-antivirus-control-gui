@@ -1,8 +1,12 @@
 # ClamAV Control
 
-Desktop app (Electron) with a local web UI to help configure **ClamAV** on your machine: status at a glance, update virus definitions, start or stop the scanning daemon, optional **real-time folder monitoring**, firewall toggles (where supported), **DNS resolver presets** on the active interface, edit `clamd.conf` / `freshclam.conf`, run scans with live progress and ETA, and manage cron jobs on Linux and macOS.
+## About this app
 
-**This project does not replace ClamAV.** Install ClamAV separately (Homebrew, your Linux package manager, or the Windows installer). The UI talks to the tools already on your system.
+**ClamAV Control is not ClamAV.** It is a **control panel** (desktop app with a local web UI) for **configuring and controlling** ClamAV once it is installed on your computer. Think of it as a **companion utility**: it runs commands, edits config files, and surfaces status for you so setup and day-to-day configuration are easier than doing everything by hand in the terminal.
+
+**ClamAV** is a free, open-source antivirus toolkit maintained under **[Cisco Talos / ClamAV](https://www.clamav.net/)**. It detects malware using regularly updated **signature databases**, and is widely used on servers and desktops (Linux, macOS, Windows). Typical components include **`freshclam`** (download signature updates), **`clamd`** (a background scanning daemon), and **`clamdscan`** / **`clamscan`** (run scans from the command line). You install that engine yourself (Homebrew, your Linux package manager, or the Windows installer from [clamav.net](https://www.clamav.net/)); **ClamAV Control** does not ship or embed the antivirus engine and only talks to the ClamAV tools already on your system. Licensing and trademarks for ClamAV itself are separate from this project (see the **License** section at the end of this file).
+
+See **Features** below for the full list of what the panel can do (dashboard, scans, quarantine, config, schedules, DNS, settings, and more).
 
 ## How it is built
 
