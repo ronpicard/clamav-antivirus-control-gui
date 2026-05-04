@@ -1,0 +1,13 @@
+---
+description: Integration tests across real boundaries (DB, HTTP, queue)
+alwaysApply: false
+---
+
+# Integration tests
+
+- Exercise contracts between modules: HTTP, database, queue, filesystem, third-party SDK.
+- Use ephemeral environments (containers, fixtures, transactions) over shared state.
+- Reset state between tests; never rely on test order.
+- Assert observable behavior, not internal call counts.
+- Stub only what you can't run locally (paid APIs, hardware); contract-test those separately.
+- Group slow ones behind a marker / tag.

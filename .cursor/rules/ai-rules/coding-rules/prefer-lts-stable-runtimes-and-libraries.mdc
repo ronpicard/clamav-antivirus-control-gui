@@ -1,0 +1,13 @@
+---
+description: LTS / stable runtimes and libraries; no EOL or pre-release in production
+alwaysApply: true
+---
+
+# Prefer LTS and stable
+
+- **Default to LTS** for runtimes and toolchains. No EOL or pre-release in production.
+- **Pin majors** where it matters (`engines`, `.nvmrc`, `.python-version`, `pyproject.toml`, `go.mod`, `Cargo.toml`, Docker base images). CI matches developers.
+- **Libraries**: latest stable minor of a maintained major. Avoid `0.x` in core paths and unmaintained packages (~12+ months without releases, archived repo, or open critical CVEs).
+- **No alphas / betas / RCs** in main branches—keep them behind a feature branch or flag.
+- **Upgrade before EOL**; track it as work. Read changelogs and run tests before bumping.
+- **Apply current-LTS security patches promptly.**

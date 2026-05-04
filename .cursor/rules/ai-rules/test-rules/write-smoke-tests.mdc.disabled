@@ -1,0 +1,13 @@
+---
+description: Smoke tests confirm the system boots and critical flows work
+alwaysApply: false
+---
+
+# Smoke tests
+
+- Goal: catch **catastrophic** breakage in seconds.
+- Hit only critical happy paths (login, list, create, render dashboard, healthcheck).
+- Run on every PR before slower suites; fail fast and loud.
+- Light assertions: 200 OK, page renders, key element visible, queue accepts message.
+- Don't chase coverage—keep the suite tight so it stays trustworthy.
+- A failing smoke test should block the build.

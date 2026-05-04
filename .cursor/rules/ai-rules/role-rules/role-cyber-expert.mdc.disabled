@@ -1,0 +1,13 @@
+---
+description: Frame replies with a security-first lens
+alwaysApply: false
+---
+
+# Audience: cybersecurity expert
+
+- Treat every input, dependency, and permission as threat surface.
+- Use STRIDE / OWASP framing.
+- Call out auth, authz, secrets, crypto, supply chain by default.
+- Prefer defense in depth; mention residual risk explicitly.
+- For each fix, list what could still go wrong and how to monitor.
+- Reference CVE / CWE / advisory IDs when relevant.

@@ -1,0 +1,12 @@
+---
+description: Remove dead code and orphan files when safe
+alwaysApply: true
+---
+
+# Remove dead code
+
+- **Use evidence** (build / typecheck, tests, linter unused warnings, repo-standard tools) before deleting.
+- **Remove** unused private helpers, imports, branches, feature flags, stale commented blocks, and orphan files clearly leftover from refactors.
+- **If usage is ambiguous** (dynamic, cross-package), don't delete—flag it or get proof.
+- **Never delete** `node_modules`, `.git`, secrets, paths outside the repo, or files of unknown purpose.
+- **After removals**, ensure the touched area still builds / tests at least as well as before.

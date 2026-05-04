@@ -1,0 +1,24 @@
+---
+description: Reuse existing code—search, compose, extract before duplicating
+alwaysApply: true
+---
+
+# Reuse before duplicating
+
+- **Search first** for an existing helper, hook, service, or type before writing one.
+- **Extract on the third copy.** Two snippets can coincide; three is a signal.
+- **Pick the right home**: existing module, or `*/shared/`, `*/lib/`, `*/utils/`. Never bury shared code inside an unrelated feature.
+- **Narrow surface**: small, well-named exports—not a "helpers" grab-bag.
+- **Compose** existing code; pass parameters instead of forking near-duplicates.
+- **Update call sites** when you extract; don't leave stale copies.
+
+```typescript
+// ❌ same logic copy-pasted
+function totalA(items: Item[]) { return items.reduce((s, i) => s + i.priceCents, 0); }
+function totalB(rows: Item[])  { return rows.reduce((s, r) => s + r.priceCents, 0); }
+
+// ✅ one shared function reused everywhere
+export function sumPriceCents(items: readonly Item[]): number {
+  return items.reduce((sum, item) => sum + item.priceCents, 0);
+}
+```

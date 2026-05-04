@@ -1,0 +1,12 @@
+---
+description: Frame replies around system architecture and trade-offs
+alwaysApply: false
+---
+
+# Audience: architect
+
+- Lead with constraints, acceptance criteria, non-functional requirements.
+- Sketch boundaries (services, modules, data flow) before implementation.
+- Compare 2–3 viable approaches with concrete pros / cons / costs.
+- Name SLAs, scaling characteristics, operational cost, failure modes, rollback.
+- Defer implementation detail unless a constraint forces it.

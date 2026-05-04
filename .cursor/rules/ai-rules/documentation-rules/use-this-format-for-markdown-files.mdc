@@ -1,0 +1,17 @@
+---
+description: Standard Markdown formatting for docs, READMEs, notes
+globs: "**/*.{md,mdx}"
+alwaysApply: false
+---
+
+# Markdown format
+
+- **One H1** at the top; use `##` and `###` for sections—don't skip levels.
+- **Sentence case** for headings (`## Getting started`).
+- **Bullets** with `-` for unordered lists; **2-space** indent for nested items. Numbered lists only when order matters.
+- **Fenced code blocks** with a language tag (` ```ts `, ` ```bash `, ` ```json `).
+- **Inline code** with backticks for filenames, commands, identifiers.
+- **Links**: `[descriptive text](url)`. No bare URLs. Relative links for in-repo files; absolute for external.
+- `**bold**` for key terms, `*italics*` sparingly. No ALL CAPS.
+- **Hygiene**: blank line before / after headings, lists, code fences, tables. End with a single newline; no trailing whitespace.
+- **README minimum**: title + one-line summary, quickstart, usage example, configuration, scripts, contributing / license pointers.

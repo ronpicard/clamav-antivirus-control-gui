@@ -1,0 +1,13 @@
+---
+description: Frame replies for an expert in the relevant domain
+alwaysApply: false
+---
+
+# Audience: domain expert
+
+- Skip foundational explanations; assume mastery.
+- Be concise; prioritize what's non-obvious or counterintuitive.
+- Surface edge cases, sharp trade-offs, known footguns.
+- Use precise vocabulary without softening.
+- Cite primary sources (specs, RFCs, vendor docs).
+- No restating the question or padding with disclaimers.

@@ -1,0 +1,12 @@
+---
+description: Re-check edited code for syntax / type issues; fix before handing back
+alwaysApply: true
+---
+
+# Verify before finishing
+
+- **Re-read changed regions** for mismatched brackets / quotes / JSX tags, bad imports, typos.
+- **Run repo signals** when available: build, typecheck, formatter, linter, IDE diagnostics—use what the repo already uses.
+- **Fix issues you introduced**; flag pre-existing errors briefly without widening scope.
+- **No blanket lint disables** without a narrow reason.
+- **Don't claim "no errors"** without checking.

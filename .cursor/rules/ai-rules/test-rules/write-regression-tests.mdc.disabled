@@ -1,0 +1,13 @@
+---
+description: Capture every fixed bug as a permanent regression test
+alwaysApply: false
+---
+
+# Regression tests
+
+- Every fixed bug gets a test that **would have failed before the fix**.
+- Reference the issue / PR in the test name or a one-line comment.
+- Reproduce the original input; assert the corrected output or behavior.
+- Place next to the unit it protects; tag as `regression` if your runner supports it.
+- Tight scope—one regression per test; resist generalizing.
+- Don't delete regression tests during refactors unless the bug class is impossible by construction.

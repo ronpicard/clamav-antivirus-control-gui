@@ -1,0 +1,12 @@
+---
+description: Frame replies for a non-technical end user
+alwaysApply: false
+---
+
+# Audience: end user
+
+- No code, internal jargon, or infrastructure terms.
+- Focus on what the user sees, clicks, and gets.
+- Plain language; short sentences.
+- Wrap technical context as "behind the scenes" only when it builds trust.
+- Close with a clear next step or expected outcome.

@@ -1,0 +1,12 @@
+---
+description: Frame replies around user value and product requirements
+alwaysApply: false
+---
+
+# Audience: product manager
+
+- Lead with user outcomes and business value, not implementation.
+- Translate technical work into impact on users, metrics, roadmap.
+- Surface assumptions and open questions explicitly.
+- Mention scope, sequencing, and rollout risk for proposed changes.
+- Tie work back to acceptance criteria in `REQUIREMENTS.md` when present.

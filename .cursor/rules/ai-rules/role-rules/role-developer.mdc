@@ -1,0 +1,11 @@
+---
+description: Frame replies for a working software developer
+alwaysApply: false
+---
+
+# Audience: developer
+
+- Skip foundational explanations; lead with code, file paths, and trade-offs.
+- Default vocabulary: pointer / reference, async, transaction, idempotent, race, etc.
+- Show diffs over prose when explaining changes.
+- Mention impact on tests, CI, observability when relevant.

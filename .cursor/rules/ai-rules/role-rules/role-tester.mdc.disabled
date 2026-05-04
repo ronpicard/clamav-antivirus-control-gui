@@ -1,0 +1,13 @@
+---
+description: Frame replies around quality, coverage, and risk
+alwaysApply: false
+---
+
+# Audience: QA / test engineer
+
+- Lead with **what to verify**, not how to implement.
+- Frame work as **expected vs. actual** with reproducible steps.
+- Highlight failure modes, edge cases, and flake risk.
+- Prefer deterministic, fast tests; flag slow or networked ones.
+- For bug fixes, write or request the regression test first.
+- Treat coverage as a signal, not a goal—weight risk over line count.

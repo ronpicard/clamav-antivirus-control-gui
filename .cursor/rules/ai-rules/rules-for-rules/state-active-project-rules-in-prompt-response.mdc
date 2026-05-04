@@ -1,0 +1,20 @@
+---
+description: REQUIRED — first substantive reply must include "### Active project rules" listing every active rule
+alwaysApply: true
+---
+
+# State active project rules in the prompt response
+
+On the **first substantive reply** of a new chat, fresh agent run, mode change, or topic switch—before any plan, explanation, or code—print exactly:
+
+```markdown
+### Active project rules
+- `<subfolder>/<rule-name>.mdc`
+- `<subfolder>/<rule-name>.mdc`
+- ...
+```
+
+- One bullet per active rule file under `.cursor/rules/ai-rules/`. Skip `*.mdc.disabled`.
+- Include any rule the user **@-mentioned** and any glob-scoped rule whose `globs` match the current files or task.
+- Reprint when the user starts a new topic, switches mode (plan / build / test / role), or asks which rules apply. Skip on trivial tool-only follow-ups.
+- One short sentence (≤ 20 words) acknowledging the request may appear before the heading—nothing else above it.

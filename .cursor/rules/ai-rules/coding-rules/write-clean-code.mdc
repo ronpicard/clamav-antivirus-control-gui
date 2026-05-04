@@ -1,0 +1,25 @@
+---
+description: Readable, maintainable code—naming, structure, simplicity
+alwaysApply: true
+---
+
+# Write clean code
+
+- **Names**: intention-revealing; no abbreviations unless universal in the domain.
+- **Functions**: one responsibility; short; early returns over deep nesting.
+- **Comments**: explain *why*, not *what*.
+- **Dependencies**: explicit parameters; no hidden globals; narrow interfaces.
+- **Errors**: fail fast with context; never swallow exceptions or return ambiguous sentinels.
+
+```typescript
+// ❌ vague name, magic value
+function proc(d: Data) {
+  if (d.x > 100) return null;
+}
+
+// ✅ named concept, explicit outcome
+function isEligibleForDiscount(order: Order): boolean {
+  const MIN_ORDER_CENTS = 100_00;
+  return order.subtotalCents >= MIN_ORDER_CENTS;
+}
+```

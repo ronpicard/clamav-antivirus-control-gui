@@ -1,0 +1,13 @@
+---
+description: E2E tests that drive the system as a real user would
+alwaysApply: false
+---
+
+# E2E tests
+
+- Cover top-N user journeys, not every screen—prioritize revenue / safety paths.
+- Stable selectors: `data-testid`, ARIA roles, text content. Never CSS classes that drift.
+- Wait on app state (network idle, element visible), not `sleep` / fixed timeouts.
+- Clean profile per test; reset auth, cookies, local storage between runs.
+- Capture artifacts (screenshot, video, HAR, trace) on failure.
+- Treat flakes as bugs: quarantine, root-cause, fix or remove—never retry-until-green.

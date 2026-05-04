@@ -1,0 +1,30 @@
+---
+description: Feature-first repository layout
+alwaysApply: true
+---
+
+# Organize repo by feature
+
+- **Feature-first**: group by domain (`src/features/billing/`) over generic buckets. `utils/`, `components/` are for cross-feature code only.
+- **One purpose per folder**: a folder answers "what lives here?" in one sentence.
+- **Stable boundaries**: cross-feature imports go through public entry points (`index.ts`, `mod.rs`, `__init__.py`)—not deep paths.
+- **Naming**: kebab-case unless the language dictates otherwise (PascalCase React components, snake_case Python).
+- **No junk in root**: keep root for top-level configs, `README`, `LICENSE`, tooling.
+- **Tests next to code** or mirrored under `tests/`—pick one per repo.
+- **Delete dead paths**: remove unused folders and generated artifacts; `.gitignore` instead of versioning.
+
+```text
+src/
+├── features/
+│   ├── billing/
+│   │   ├── api.ts
+│   │   ├── billing.test.ts
+│   │   └── index.ts
+│   └── auth/
+│       ├── login.ts
+│       └── index.ts
+├── shared/
+│   ├── http.ts
+│   └── logger.ts
+└── index.ts
+```

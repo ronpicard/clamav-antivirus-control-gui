@@ -1,0 +1,21 @@
+---
+description: Secure code, data, and dependencies by default
+alwaysApply: true
+---
+
+# Secure by default
+
+- **Secrets**: never commit keys, tokens, or passwords. Use env vars or a secrets manager; rotate anything possibly leaked.
+- **Input**: treat external input as untrusted—validate type, length, allowed values; use parameterized SQL; encode output for its context.
+- **AuthZ**: check authorization on every sensitive action, not only at the UI. Deny by default; least privilege.
+- **Crypto**: use vetted libraries and modern algorithms (Argon2/bcrypt for passwords, TLS 1.2+). Don't roll your own.
+- **Dependencies**: prefer maintained packages; pin versions where it matters.
+- **Logging**: never log secrets, full payment data, or raw session tokens. Redact or hash sensitive identifiers.
+
+```typescript
+// ❌ string concatenation into SQL
+db.query(`SELECT * FROM users WHERE id = '${userId}'`);
+
+// ✅ parameterized values
+db.query('SELECT * FROM users WHERE id = $1', [userId]);
+```

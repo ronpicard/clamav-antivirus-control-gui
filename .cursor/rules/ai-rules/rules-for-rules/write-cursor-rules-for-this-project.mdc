@@ -1,0 +1,58 @@
+---
+description: Author and maintain Cursor project rules—location, frontmatter, scope, quality bar
+globs: "**/.cursor/rules/ai-rules/**/*.mdc"
+alwaysApply: false
+---
+
+# Write and maintain Cursor rules
+
+Rules live in `.cursor/rules/ai-rules/<subfolder>/<name>.mdc` (Markdown + YAML frontmatter). Treat them as short internal playbooks, not essays.
+
+## Filenames
+
+- **kebab-case**, **verb-first** when natural (e.g. `write-clean-code.mdc`).
+- Always `.mdc`. Name describes one topic; the `description` adds nuance.
+
+## Frontmatter
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `description` | string | One line shown in the rule picker; specific enough to choose this rule. |
+| `globs` | string | Optional. Path glob; rule is considered when matching files are in context. |
+| `alwaysApply` | boolean | If `true`, the rule is in every chat for this project—use sparingly. |
+
+**Scope**
+
+- `alwaysApply: true` — project-wide norms (style, security, how we ship). Few rules; each must earn its token cost.
+- `alwaysApply: false` + `globs` — stack- or area-specific rules.
+- `alwaysApply: false` and **no** `globs` — only for meta rules toggled by mode commands.
+
+## Body
+
+- One `#` title.
+- **Bullets > prose**—scannable constraints.
+- Short ❌/✅ snippets only when easy to misread.
+- One concern per file; **aim under ~50 lines**. Split when longer.
+
+## Quality bar
+
+- Actionable bullets, not slogans.
+- `description` is unique and actionable—no `Rules` / `Misc` / `Important`.
+- Examples copy-paste realistic; pull from this repo when possible.
+- No duplicate guidance—link or consolidate.
+- No secrets or environment values (rules are versioned).
+
+## Maintenance
+
+- Update examples when APIs or folder layout change.
+- Fix `mdc:` links when rules are renamed or split.
+- Mark outdated guidance clearly; remove rules that no longer apply with a one-line migration hint.
+- External links: prefer stable URLs; verify they resolve.
+
+## Before merging a new rule
+
+- [ ] Path is `.cursor/rules/ai-rules/<subfolder>/<kebab-case>.mdc`.
+- [ ] Frontmatter parses (no dangling `globs:` without a value).
+- [ ] `description` is unique and actionable.
+- [ ] Scope is intentional (`alwaysApply` vs `globs` not fighting).
+- [ ] No duplicate guidance.

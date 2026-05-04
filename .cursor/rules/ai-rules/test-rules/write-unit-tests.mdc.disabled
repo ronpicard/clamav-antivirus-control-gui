@@ -1,0 +1,13 @@
+---
+description: Unit tests for pure logic; one behavior per test
+alwaysApply: false
+---
+
+# Unit tests
+
+- One unit (function / method / class) per file; **arrange / act / assert**.
+- Pure: no real network, database, or shared filesystem (use temp dirs / in-memory).
+- Mock at boundaries you don't own; never mock the unit under test.
+- Cover happy path, **boundary**, and **error** cases; one behavior per test.
+- Name: `<unit> <does X> when <condition>` (or framework equivalent).
+- Deterministic—no time, randomness, or order dependence. Fast: seconds, not minutes.
