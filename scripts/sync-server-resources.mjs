@@ -4,11 +4,20 @@
  * `bundle.resources` in `tauri.conf.json`.
  *
  * Tauri does not run `prepare:server` or `build:client` for us; this script
- * is invoked from `npm run tauri:build` after both completed.
+ * is invoked from the `stage-tauri-bundle` npm script after both completed
+ * (or directly via Tauri's `beforeDevCommand`/`beforeBuildCommand`).
  *
  * Layout produced:
  *   src-tauri/resources/server/        (full server tree, incl. node_modules)
  *   src-tauri/resources/client/dist/   (built React app)
+ *
+ * Implementation notes:
+ * * We use `fs.cpSync(..., { recursive: true })` rather than a hand-rolled
+ *   walker. `npm ci` can produce hoisted symlinks (e.g. on Linux/macOS for
+ *   peer-deduped packages), and a naive `Dirent.isDirectory() / isFile()`
+ *   walker silently skips symlinks, leaving Tauri's bundler dangling at
+ *   `resources/server/node_modules/<pkg> doesn't exist`. `fs.cpSync` follows
+ *   them via `dereference: true`.
  */
 import fs from "fs";
 import path from "path";
@@ -23,25 +32,11 @@ const STAGE_ROOT = path.join(root, "src-tauri", "resources");
 const SERVER_DEST = path.join(STAGE_ROOT, "server");
 const CLIENT_DIST_DEST = path.join(STAGE_ROOT, "client", "dist");
 
-const SKIP_DIRS = new Set([".git"]);
+const SERVER_FILTER = (src) => !src.split(path.sep).includes(".git");
 
 function rmrf(p) {
   if (!fs.existsSync(p)) return;
   fs.rmSync(p, { recursive: true, force: true });
-}
-
-function copyDir(srcDir, destDir) {
-  fs.mkdirSync(destDir, { recursive: true });
-  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else if (entry.isFile()) {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
 }
 
 function ensure(name, src) {
@@ -51,14 +46,25 @@ function ensure(name, src) {
   }
 }
 
+function copyTree(src, dest, opts = {}) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.cpSync(src, dest, {
+    recursive: true,
+    dereference: true,
+    errorOnExist: false,
+    force: true,
+    ...opts,
+  });
+}
+
 function main() {
   ensure("server source", SERVER_SRC);
-  ensure("server node_modules", path.join(SERVER_SRC, "node_modules"));
-  ensure("client/dist", CLIENT_DIST_SRC);
+  ensure("server node_modules (run `make install-server` first)", path.join(SERVER_SRC, "node_modules"));
+  ensure("client/dist (run `make build:client` first)", CLIENT_DIST_SRC);
 
   rmrf(STAGE_ROOT);
-  copyDir(SERVER_SRC, SERVER_DEST);
-  copyDir(CLIENT_DIST_SRC, CLIENT_DIST_DEST);
+  copyTree(SERVER_SRC, SERVER_DEST, { filter: SERVER_FILTER });
+  copyTree(CLIENT_DIST_SRC, CLIENT_DIST_DEST);
 
   console.log(
     `sync-server-resources: staged → ${path.relative(root, STAGE_ROOT)}`

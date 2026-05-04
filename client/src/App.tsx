@@ -320,7 +320,12 @@ export default function App() {
               <img src="/icon.png" alt="" width={28} height={28} className="brand-icon-img" />
             </div>
             <div>
-              <h1>ClamAV Control</h1>
+              <h1>
+                ClamAV Control
+                <span className="brand-version" title={`Version ${__APP_VERSION__}`}>
+                  v{__APP_VERSION__}
+                </span>
+              </h1>
               <p className="subtitle">Antivirus dashboard for your computer</p>
             </div>
           </div>

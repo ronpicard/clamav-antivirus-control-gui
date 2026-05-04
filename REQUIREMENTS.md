@@ -30,17 +30,44 @@ Source of truth for product, runtime, and build requirements of
 ## Build / runtime
 
 - Runtime: **Node.js 20+** must be installed on PATH (Tauri shell spawns
-  the existing Node helper).
-- Build: **Rust stable** (1.77+) and **Node.js 20+**; Linux builders need
-  WebKitGTK and GTK dev headers (see `.github/workflows/ci.yml`).
+  the existing Node helper). This is **temporary** — see "Planned" below.
+- Build: **Rust stable** (1.77+), **Node.js 20+**, and **GNU Make**.
+  Linux builders need WebKitGTK and GTK dev headers (see
+  `.github/workflows/ci.yml`).
+- The canonical command-line interface is `make` (see `make help` or
+  `RELEASE.md`). Direct npm / cargo invocations remain supported.
 - Code signing is **not** configured; macOS users may need
   Right-click → Open and Windows users may see SmartScreen.
 
-## Out of scope (for now)
+## Planned (in progress)
 
-- Bundling Node.js as a Tauri sidecar (planned).
-- Native ClamAV / DNS / cron Tauri commands replacing the Express
-  endpoints (planned, strangler pattern).
+- **Drop the Node runtime requirement** — port the Express server
+  (`server/index.js`) to a Rust HTTP server inside the Tauri shell,
+  feature-by-feature. The existing helper continues to run as the
+  fallback until the last endpoint is native, at which point the Node
+  spawn and `nodejs` deb dependency are removed. Tracked in `RELEASE.md`
+  § 7.
+- **Bundle Node.js as a Tauri sidecar** as an interim if the full Rust
+  port slips, so end users do not need to install Node manually.
+- **"Open at login"** as a native Tauri command (regressed during the
+  Electron → Tauri swap).
+- **macOS Endpoint Security** ("block before open" preventative
+  scanning) — see `native/macos-endpoint-security/` for the design notes
+  and Swift sketch. Requires Apple's
+  `com.apple.developer.endpoint-security.client` entitlement and a
+  System Extension target.
+
+## Conventions / known duplications
+
+- The squircle-masked app icon is intentionally written to **two**
+  locations by `scripts/render-app-icon.mjs`:
+  - `assets/icon.png` — consumed by Tauri's bundler
+    (`npx tauri icon ./assets/icon.png …`).
+  - `client/public/icon.png` — Vite only ships static files from
+    `public/`, so the React UI cannot symlink to `assets/`.
+  Both are regenerated atomically by `make icons` from
+  `assets/icon-source.png`.
+
+## Out of scope
+
 - Mobile (iOS / Android) targets.
-- "Open at login" — temporarily removed during the Electron → Tauri
-  migration; will return as a Tauri command.

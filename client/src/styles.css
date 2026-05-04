@@ -203,6 +203,21 @@ body {
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-glow);
 }
 
+.brand-version {
+  display: inline-block;
+  margin-left: 0.55rem;
+  padding: 0.12rem 0.5rem;
+  border: 1px solid var(--accent-glow, rgba(80, 200, 120, 0.35));
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted, #8aa);
+  background: rgba(0, 0, 0, 0.18);
+  vertical-align: middle;
+  user-select: text;
+}
+
 .brand-icon-img {
   display: block;
   width: 28px;

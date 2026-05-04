@@ -48,27 +48,36 @@ The Tauri shell launches **system Node.js**; **Node 20+ must be installed and on
 - **Node.js 20+** on PATH (the Tauri shell launches the existing Node helper).
 - **ClamAV** installed and on `PATH` (`freshclam`, `clamdscan`, etc.).
 
-## npm scripts (repo root)
+## Build commands (canonical: `make`)
 
-| Command | Purpose |
-|---------|---------|
-| `npm run tauri:dev` | Stage server + UI, then launch the desktop app in dev mode. |
-| `npm run tauri:build` | Stage server + UI, then build installers for the host OS. |
-| `npm run stage-tauri-bundle` | Run `prepare:server`, build the client, and copy both into `src-tauri/resources/`. |
-| `npm run build:client` | Production build of the React UI. |
-| `npm run prepare:server` | Install the server's production dependencies. |
-| `npm run render-icon` | Regenerate `build/icon.png` and `client/public/icon.png` from `assets/icon-source.png`. Run `npx tauri icon ./build/icon.png --output src-tauri/icons` to refresh Tauri's icon set. |
+`make` is the standard top-level interface; it wraps the underlying `npm`, `cargo`, and Tauri CLIs so you don't have to remember each.
+
+```bash
+make help            # list all targets
+make install         # one-time: install root + client + server deps
+make dev             # run the Tauri desktop app in dev mode
+make build           # build a release bundle for THIS OS
+make check           # cargo check + client build (CI-style smoke)
+make lint            # TypeScript build + `cargo clippy -D warnings`
+make icons           # regenerate `build/`, `client/public/`, and `src-tauri/icons/`
+make bump-version VERSION=1.1.0   # update version in all 5 places
+make release VERSION=1.1.0        # bump + commit + tag + push (triggers CI)
+make clean           # remove build artifacts
+make clean-all       # also remove node_modules + cargo target
+```
+
+The npm scripts (`npm run tauri:dev`, `npm run tauri:build`, `npm run stage-tauri-bundle`, `npm run build:client`, `npm run prepare:server`, `npm run render-icon`, `npm run bump-version`) still exist as the underlying mechanism — `make` just calls them. Use whichever you prefer.
 
 ## Run from source (no installer)
 
 ```bash
 git clone https://github.com/ronpicard/clamav-antivirus-control-gui.git
 cd clamav-antivirus-control-gui
-npm install
-npm run tauri:dev
+make install
+make dev
 ```
 
-The script stages everything (server deps + client build + resource sync) and launches Tauri's dev runtime, which boots the Node helper on **`127.0.0.1:38471`** and opens a window pointed at it.
+`make dev` stages everything (server deps + client build + resource sync) and launches Tauri's dev runtime, which boots the Node helper on **`127.0.0.1:38471`** and opens a window pointed at it.
 
 ### UI development (hot reload)
 
@@ -101,11 +110,11 @@ Open **http://127.0.0.1:3000** (default port; set **`PORT`** if needed). The ser
 ## Build installers
 
 ```bash
-npm install
-npm run tauri:build
+make install
+make build
 ```
 
-Outputs land under **`src-tauri/target/release/bundle/`**: `.dmg` / `.app` on macOS, `.msi` / NSIS `.exe` on Windows, `.AppImage` / `.deb` on Linux. On your machine, **`npm run tauri:build`** only produces installers for **that** OS.
+Outputs land under **`src-tauri/target/release/bundle/`**: `.dmg` / `.app` on macOS, `.msi` / NSIS `.exe` on Windows, `.AppImage` / `.deb` on Linux. On your machine, `make build` only produces installers for **that** OS.
 
 ### Continuous builds on GitHub
 
@@ -116,11 +125,10 @@ Outputs land under **`src-tauri/target/release/bundle/`**: `.dmg` / `.app` on ma
 
 ### App icon (developers)
 
-Master artwork is **`assets/icon-source.png`**. **`build/icon.png`** and **`client/public/icon.png`** are generated as **1024×1024** PNGs with a transparent squircle mask. Tauri's bundle icons live in **`src-tauri/icons/`** (regenerate with **`npx tauri icon ./build/icon.png --output src-tauri/icons`** after editing the source).
+Master artwork is **`assets/icon-source.png`**. The script writes the squircle-masked 1024×1024 PNG to **`assets/icon.png`** (used by Tauri's bundler) and to **`client/public/icon.png`** (served by Vite at `/icon.png` for the React header). Tauri's per-platform icon set lives under **`src-tauri/icons/`**.
 
 ```bash
-npm run render-icon
-npx tauri icon ./build/icon.png --output src-tauri/icons
+make icons    # regenerates everything end-to-end
 ```
 
 ## Where files go

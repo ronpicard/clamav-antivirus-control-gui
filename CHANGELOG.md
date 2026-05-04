@@ -8,6 +8,38 @@ project follows semantic versioning.
 
 ## [Unreleased]
 
+### Removed (rules pass)
+- Untracked **`release/`** directory (electron-builder leftovers from the
+  pre-Tauri era).
+- Untracked empty **`scan/`** dev scratch directory.
+- Repo-root **`.DS_Store`** cruft.
+
+### Changed (rules pass)
+- Consolidated icon outputs: **`build/icon.png`** moved to
+  **`assets/icon.png`** (single source of truth for app branding under
+  `assets/`). Updated `scripts/render-app-icon.mjs`, `Makefile`,
+  `README.md` references.
+- Rewrote `native/macos-endpoint-security/README.md` Electron references
+  to point at the Tauri shell.
+
+### Added
+- **Top-level `Makefile`** as the canonical command-line interface
+  (`make help`). Wraps the existing npm + cargo + Tauri tooling so
+  contributors don't have to remember each: `make install`, `make dev`,
+  `make build`, `make check`, `make lint`, `make icons`, `make clean`,
+  `make bump-version VERSION=…`, `make release VERSION=…`.
+- **Version badge** in the top-left header showing the running app
+  version (sourced from the root `package.json` and injected into the
+  Vite bundle as `__APP_VERSION__`).
+- **`scripts/bump-version.mjs`** + `make bump-version VERSION=<semver>`
+  (or `npm run bump-version <semver>`) to update the version in
+  **all five** places (`package.json`, `client/package.json`,
+  `server/package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml`) atomically.
+- **`RELEASE.md`** — per-OS build prerequisites, local build commands,
+  CI release flow, version-bump steps, smoke-test checklist,
+  troubleshooting, and the runtime-Node migration plan.
+
 ### Changed
 - Replaced the Electron shell with a **Tauri 2 + Rust** shell. Installer
   size drops from ~hundreds of MB (Chromium + Node bundled) to a small native
