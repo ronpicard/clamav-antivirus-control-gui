@@ -6,7 +6,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// Public port the Tauri webview connects to. Axum binds here and is the
+/// only port the UI ever talks to.
 const DEFAULT_PORT: u16 = 38471;
+/// Internal port the legacy Node helper listens on while the strangler
+/// migration is in flight. Removed once the last route is native.
+const DEFAULT_PROXY_PORT: u16 = 38470;
 const HEALTH_TIMEOUT_MS: u64 = 15_000;
 const HEALTH_POLL_MS: u64 = 150;
 
@@ -16,6 +21,15 @@ pub fn port_from_env() -> u16 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT)
+}
+
+/// Resolve the legacy Node proxy port from `CLAMAV_GUI_PROXY_PORT` or fall
+/// back. The axum server forwards un-ported routes here.
+pub fn proxy_port_from_env() -> u16 {
+    std::env::var("CLAMAV_GUI_PROXY_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PROXY_PORT)
 }
 
 /// Owned handle to the spawned Node process.
@@ -70,6 +84,8 @@ impl ServerHandle {
         let child = Command::new(&node)
             .arg(&server_entry)
             .current_dir(&server_dir)
+            // `port` here is the *internal* proxy port the axum strangler
+            // forwards to. The webview never connects to it directly.
             .env("PORT", port.to_string())
             .env("BIND_HOST", "127.0.0.1")
             .env("CLIENT_DIST", &client_dist)

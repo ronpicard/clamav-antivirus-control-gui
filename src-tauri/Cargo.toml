@@ -17,12 +17,33 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util", "time", "process", "signal", "sync", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
 url = "2"
+
+# axum: in-process HTTP server replacing the Node Express helper.
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+# reqwest is used during the strangler migration to forward un-ported routes
+# to the Node helper. It will be removed once every endpoint is native.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+futures-util = "0.3"
+
+# Misc helpers used by ported handlers.
+regex = "1"
+once_cell = "1"
+anyhow = "1"
+thiserror = "2"
+which = "7"
+dirs = "5"
 
 [features]
 default = ["custom-protocol"]

@@ -42,11 +42,23 @@ Source of truth for product, runtime, and build requirements of
 ## Planned (in progress)
 
 - **Drop the Node runtime requirement** — port the Express server
-  (`server/index.js`) to a Rust HTTP server inside the Tauri shell,
-  feature-by-feature. The existing helper continues to run as the
-  fallback until the last endpoint is native, at which point the Node
-  spawn and `nodejs` deb dependency are removed. Tracked in `RELEASE.md`
-  § 7.
+  (`server/index.js`) to an in-process **axum** HTTP server inside the
+  Tauri shell, feature-by-feature (strangler pattern).
+  - **Phase 1 — DONE.** Axum is live on the public port; `/api/dns/presets`,
+    `/api/scan/history`, `/api/quarantine`, and `/api/config/:which` (GET)
+    are native; everything else proxies to the Node helper on the
+    internal port; integration test in `src-tauri/tests/api_strangler.rs`.
+  - **Phase 2 — Writes & shell-outs**: `/api/config/:which` (PUT),
+    `/api/config/reset`, `/api/actions/{firewall, restart-clamd,
+    freshclam, clamd-service, realtime}`, `/api/dns/{status, apply}`.
+  - **Phase 3 — SSE streams**: `/api/scan/stream`, `/api/scan/{start,
+    cancel}`, `/api/actions/freshclam-stream`, `/api/realtime/stream`.
+  - **Phase 4 — Install/uninstall flows**: `/api/install/{status, step,
+    uninstall}` (multi-step + elevation).
+  - **Phase 5 — Realtime watcher in Rust**: replace Node `fswatch` with
+    the `notify` crate; port `/api/realtime/{status, start, stop, events}`.
+  - **Phase 6 — Cutover**: delete `server/`, `prepare:server`, drop the
+    `nodejs` `.deb` dependency, remove the proxy module and proxy port.
 - **Bundle Node.js as a Tauri sidecar** as an interim if the full Rust
   port slips, so end users do not need to install Node manually.
 - **"Open at login"** as a native Tauri command (regressed during the
@@ -67,6 +79,17 @@ Source of truth for product, runtime, and build requirements of
     `public/`, so the React UI cannot symlink to `assets/`.
   Both are regenerated atomically by `make icons` from
   `assets/icon-source.png`.
+
+## Cross-platform verification
+
+- **CI on `main`** must build green on `macos-latest`, `ubuntu-latest`, and
+  `windows-latest` (`.github/workflows/ci.yml`). This validates resource
+  staging, `cargo check --locked`, and a real Tauri bundle on every OS.
+- **macOS smoke** (manual): `make dev` → `/api/health`, DNS, firewall, daemon,
+  real-time monitor endpoints all return `200` with populated payloads.
+- **Windows / Linux smoke** beyond CI build is manual and gated on having
+  ClamAV installed locally; CI only proves the shell + bundler works, not
+  ClamAV control on those OSes.
 
 ## Out of scope
 

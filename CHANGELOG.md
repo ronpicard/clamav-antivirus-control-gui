@@ -8,6 +8,38 @@ project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added (Phase 1: Express → Rust strangler migration)
+- **In-process axum HTTP server** in the Tauri Rust shell
+  (`src-tauri/src/features/api/`). The webview now connects to axum on
+  `127.0.0.1:38471`; axum serves the React static bundle and any natively
+  ported `/api/*` route, and forwards everything else to the legacy Node
+  helper (now bound to internal port `38470`).
+- **Strangler proxy** (`features::api::proxy`) using `reqwest` + `axum`'s
+  `OriginalUri` extractor so nested routes forward the un-stripped path.
+  The proxy disappears once the last endpoint is native.
+- **Native ports of the read-only "pure" endpoints** (no platform
+  shell-outs, no shared in-memory state):
+  - `GET /api/dns/presets`
+  - `GET /api/scan/history`
+  - `GET /api/quarantine`
+  - `GET /api/config/:which` (clamd / freshclam)
+- **Integration test** `src-tauri/tests/api_strangler.rs` exercises every
+  ported route plus the proxy fall-through; runs on every CI push across
+  Linux / macOS / Windows.
+- New `dirs`, `axum`, `tower-http`, `reqwest`, `regex`, `which`,
+  `anyhow`, `thiserror`, `once_cell`, `futures-util`, `http-body-util`,
+  `bytes` Rust dependencies (each is current-LTS / actively maintained).
+
+### Fixed
+- **Resource staging on hoisted `node_modules`.** `scripts/sync-server-resources.mjs`
+  copied entries with a hand-rolled walker that filtered on `Dirent.isFile()` /
+  `isDirectory()`, silently dropping symlinked packages (e.g. the `destroy`
+  Express transitive dep). The bundler then failed with
+  `resource path 'resources/server/node_modules/destroy' doesn't exist`.
+  Replaced with `fs.cpSync({ recursive: true, dereference: true })` which
+  follows symlinks. Verified end-to-end on the Linux + Windows + macOS CI
+  matrix.
+
 ### Removed (rules pass)
 - Untracked **`release/`** directory (electron-builder leftovers from the
   pre-Tauri era).
