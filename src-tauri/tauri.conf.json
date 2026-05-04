@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ClamAV Control",
+  "version": "1.0.0",
+  "identifier": "dev.clamav.gui",
+  "build": {
+    "beforeDevCommand": "npm run stage-tauri-bundle",
+    "beforeBuildCommand": "npm run stage-tauri-bundle",
+    "frontendDist": "../client/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "copyright": "Copyright © contributors",
+    "shortDescription": "ClamAV Control",
+    "longDescription": "Desktop control panel for ClamAV — status, scans, quarantine, schedules, DNS, real-time monitoring.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/server/**/*",
+      "resources/client/dist/**/*"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "displayLanguageSelector": false
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["nodejs"]
+      }
+    }
+  }
+}

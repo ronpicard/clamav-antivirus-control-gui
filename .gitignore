@@ -3,3 +3,6 @@ release
 client/dist
 .DS_Store
 .vscode/
+src-tauri/target
+src-tauri/resources
+src-tauri/gen

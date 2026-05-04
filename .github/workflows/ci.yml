@@ -1,28 +1,20 @@
-name: Release
+name: CI
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
-            args: "--target universal-apple-darwin"
-          - platform: ubuntu-latest
-            args: ""
-          - platform: windows-latest
-            args: ""
+        platform: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +33,6 @@ jobs:
             fakeroot
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -62,19 +52,14 @@ jobs:
           npm ci
           npm ci --prefix client
 
-      - name: Build & publish Tauri bundles
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "ClamAV Control ${{ github.ref_name }}"
-          releaseBody: |
-            Unsigned desktop builds for macOS, Windows, and Linux.
+      - name: Stage Tauri bundle inputs
+        run: npm run stage-tauri-bundle
 
-            **Runtime requirement:** Node.js 20+ must be installed and on PATH.
-            ClamAV Control launches a local Node helper to talk to ClamAV.
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+      - name: cargo check (Tauri shell)
+        working-directory: src-tauri
+        run: cargo check --locked
+
+      - name: Build unsigned bundles (smoke test)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx tauri build --ci

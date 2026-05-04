@@ -10,10 +10,15 @@ See **Features** below for the full list of what the panel can do (dashboard, sc
 
 ## How it is built
 
-- **`client/`** — React + TypeScript (Vite). Production assets go to `client/dist/`.
-- **`server/`** — Express API and ClamAV integration (`node index.js`).
-- **`electron/`** — Shell app: starts the server on **127.0.0.1** (port **38471** in packaged/dev Electron), loads the built UI, Dock/window icon, and **open at login** on desktop.
-- Packaged apps ship **server** and **client/dist** under app resources; nothing listens on the public internet by default.
+| Layer | Folder | Stack |
+|-------|--------|-------|
+| **Desktop shell** | `src-tauri/` | **Tauri 2** + Rust. Spawns the local helper, awaits health, opens the WebView. |
+| **Local helper** | `server/` | **Node.js / Express** — talks to ClamAV (`freshclam`, `clamdscan`, etc.), DNS, cron. Bound to `127.0.0.1` only. |
+| **Web UI** | `client/` | **React + TypeScript (Vite)**. Production assets in `client/dist/`. |
+
+At runtime the Tauri shell starts the Node helper on **`127.0.0.1:38471`** (override with **`CLAMAV_GUI_PORT`**), waits for `/api/health`, and points the WebView at that URL — so the existing same-origin React `fetch` and `EventSource` traffic keeps working unchanged.
+
+The Tauri shell launches **system Node.js**; **Node 20+ must be installed and on PATH** for the packaged app. Bundling Node as a Tauri sidecar is tracked in **`REQUIREMENTS.md`** as future work.
 
 ## Features
 
@@ -26,52 +31,51 @@ See **Features** below for the full list of what the panel can do (dashboard, sc
 | **Schedules** | Cron presets and raw crontab (macOS / Linux). |
 | **Config** | Guided or raw editing of ClamAV config files. |
 | **DNS** | Presets (e.g. OpenDNS, Google, Cloudflare), DHCP / automatic, or custom servers on supported platforms. |
-| **Settings** | Refresh behavior, optional auto-start for real-time monitoring and the ClamAV daemon, optional default cron jobs on app open, and **open at login** (Electron). |
+| **Settings** | Refresh behavior, optional auto-start for real-time monitoring and the ClamAV daemon, optional default cron jobs on app open. |
 | **Instructions** | In-app help and tab overview. |
 | **Auto-install** | Guided ClamAV install via Homebrew on macOS; manual steps for other OSes. |
 
 ## Requirements
 
-- **Node.js 20+** (to build or run from source)
-- **ClamAV** installed and on your `PATH` (`freshclam`, `clamdscan`, etc.)
+### Build
+
+- **Rust stable (1.77+)** — [rustup](https://rustup.rs/).
+- **Node.js 20+** with **`npm`**.
+- **Linux only** (build host): WebKitGTK + GTK dev headers — see `.github/workflows/ci.yml`.
+
+### Runtime (packaged app)
+
+- **Node.js 20+** on PATH (the Tauri shell launches the existing Node helper).
+- **ClamAV** installed and on `PATH` (`freshclam`, `clamdscan`, etc.).
 
 ## npm scripts (repo root)
 
 | Command | Purpose |
 |---------|---------|
-| `npm run electron` | Build the client, then launch Electron against the bundled stack. |
-| `npm run dist` | Build client, install production server deps, run **electron-builder** → **`release/`**. |
-| `npm run pack` | Same as `dist` but outputs an unpacked app dir (faster to sanity-check). |
-| `npm run render-icon` | Regenerate **`build/icon.png`** and **`client/public/icon.png`** from **`assets/icon-source.png`**. |
+| `npm run tauri:dev` | Stage server + UI, then launch the desktop app in dev mode. |
+| `npm run tauri:build` | Stage server + UI, then build installers for the host OS. |
+| `npm run stage-tauri-bundle` | Run `prepare:server`, build the client, and copy both into `src-tauri/resources/`. |
+| `npm run build:client` | Production build of the React UI. |
+| `npm run prepare:server` | Install the server's production dependencies. |
+| `npm run render-icon` | Regenerate `build/icon.png` and `client/public/icon.png` from `assets/icon-source.png`. Run `npx tauri icon ./build/icon.png --output src-tauri/icons` to refresh Tauri's icon set. |
 
 ## Run from source (no installer)
 
-**macOS / Linux (bash):**
-
 ```bash
 git clone https://github.com/ronpicard/clamav-antivirus-control-gui.git
 cd clamav-antivirus-control-gui
 npm install
-npm run electron
+npm run tauri:dev
 ```
 
-**Windows (PowerShell or Command Prompt):**
-
-```powershell
-git clone https://github.com/ronpicard/clamav-antivirus-control-gui.git
-cd clamav-antivirus-control-gui
-npm install
-npm run electron
-```
-
-This builds the React UI and opens the Electron window. The backend listens on **127.0.0.1:38471** only (override with **`CLAMAV_GUI_PORT`** if needed).
+The script stages everything (server deps + client build + resource sync) and launches Tauri's dev runtime, which boots the Node helper on **`127.0.0.1:38471`** and opens a window pointed at it.
 
 ### UI development (hot reload)
 
-Use two terminals so Vite can proxy API calls to the Node server:
+Tauri's WebView talks to a same-origin Node helper, so for hot-reloaded React work it's still fastest to run client + server on their dev ports and use a normal browser:
 
 ```bash
-# Terminal 1 — API on port 3000 (default)
+# Terminal 1 — Node helper on port 3000
 npm install --prefix server
 cd server && npm run dev
 ```
@@ -82,40 +86,42 @@ npm install --prefix client
 npm run dev --prefix client
 ```
 
-Open **http://localhost:5173**. For a full desktop run after UI changes, use **`npm run electron`** again.
+Open **http://localhost:5173**. Re-run **`npm run tauri:dev`** when you want to verify the full desktop experience.
 
 ### Browser-only (optional)
 
 ```bash
-npm run build --prefix client
-npm install --prefix server
+npm run build:client
+npm run prepare:server
 cd server && npm start
 ```
 
-Open **http://127.0.0.1:3000** (default port; set **`PORT`** if needed). The server serves the built UI from **`client/dist`** (repo root), or from **`CLIENT_DIST`** if that environment variable is set.
+Open **http://127.0.0.1:3000** (default port; set **`PORT`** if needed). The server serves the built UI from **`client/dist`**, or from **`CLIENT_DIST`** if that environment variable is set.
 
 ## Build installers
 
 ```bash
 npm install
-npm run dist
+npm run tauri:build
 ```
 
-Outputs land in **`release/`** (e.g. `.dmg` / `.zip` on macOS, NSIS installer + portable **`.exe`** on Windows, **`.AppImage`** / **`.deb`** on Linux). On your machine, **`npm run dist`** only produces installers for **that** OS (e.g. on a Mac you get macOS artifacts only).
+Outputs land under **`src-tauri/target/release/bundle/`**: `.dmg` / `.app` on macOS, `.msi` / NSIS `.exe` on Windows, `.AppImage` / `.deb` on Linux. On your machine, **`npm run tauri:build`** only produces installers for **that** OS.
 
-**GitHub Actions** builds **macOS, Windows, and Linux** installers on every push to `main` / PRs (**`.github/workflows/electron-release.yml`**). Pushing a version tag such as **`v1.0.0`** runs **`.github/workflows/release.yml`**, which uploads all three platforms to a **[GitHub Release](https://github.com/ronpicard/clamav-antivirus-control-gui/releases)**.
+### Continuous builds on GitHub
 
-**Unsigned builds:** On **macOS**, use **Right-click → Open** the first time. On **Windows**, SmartScreen may show “Windows protected your PC” for an unknown publisher — use **More info → Run anyway** if you trust the build. Code signing is not configured in this repo.
+- **`.github/workflows/ci.yml`** runs cargo check + a Tauri build on **Linux, macOS, and Windows** for every push and PR (smoke test).
+- **`.github/workflows/release.yml`** runs the same matrix on a tag push (e.g. **`v1.0.0`**) and uploads all three platforms to a **[GitHub Release](https://github.com/ronpicard/clamav-antivirus-control-gui/releases)** via `tauri-apps/tauri-action`.
+
+**Unsigned builds:** On **macOS**, use **Right-click → Open** the first time. On **Windows**, SmartScreen may show "Windows protected your PC" for an unknown publisher — use **More info → Run anyway** if you trust the build. Code signing is not configured in this repo.
 
 ### App icon (developers)
 
-Master artwork is **`assets/icon-source.png`**. **`build/icon.png`** and **`client/public/icon.png`** are generated as **1024×1024** PNGs with a **transparent squircle mask** (square output for the Dock and installers). After editing the source file, run:
+Master artwork is **`assets/icon-source.png`**. **`build/icon.png`** and **`client/public/icon.png`** are generated as **1024×1024** PNGs with a transparent squircle mask. Tauri's bundle icons live in **`src-tauri/icons/`** (regenerate with **`npx tauri icon ./build/icon.png --output src-tauri/icons`** after editing the source).
 
 ```bash
 npm run render-icon
+npx tauri icon ./build/icon.png --output src-tauri/icons
 ```
-
-Run **`npm run dist`** afterward so packaged builds pick up the new icon.
 
 ## Where files go
 
@@ -125,15 +131,15 @@ Run **`npm run dist`** afterward so packaged builds pick up the new icon.
 
 ## Troubleshooting (packaged app)
 
-If the window does not appear, check **`server.log`** in the app’s user-data folder:
+If the window does not appear, check **`server.log`** in the app's user-data folder:
 
 | OS | Typical path |
 |----|----------------|
-| **macOS** | `~/Library/Application Support/clamav-antivirus-control-gui/server.log` |
-| **Windows** | `%APPDATA%\clamav-antivirus-control-gui\server.log` (open **Run** → paste `%APPDATA%\clamav-antivirus-control-gui`) |
-| **Linux** | `~/.config/clamav-antivirus-control-gui/server.log` |
+| **macOS** | `~/Library/Application Support/dev.clamav.gui/server.log` |
+| **Windows** | `%APPDATA%\dev.clamav.gui\server.log` |
+| **Linux** | `~/.config/dev.clamav.gui/server.log` |
 
-If the folder name differs slightly (e.g. product name with spaces), look under the same parent (`Application Support`, `%APPDATA%`, or `~/.config`) for a **clamav**-related directory.
+If the folder name differs (older Electron builds used `clamav-antivirus-control-gui`), look under the same parent for any `clamav` / `dev.clamav.gui` directory.
 
 ## License
 

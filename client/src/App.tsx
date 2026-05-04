@@ -1616,18 +1616,6 @@ function SettingsPanel({
   onAutoEnsureCronDefaultsChange: (v: boolean) => void;
   onRefresh: (silent?: boolean) => void | Promise<void>;
 }) {
-  const [openAtLogin, setOpenAtLogin] = useState(false);
-  const [loginLoaded, setLoginLoaded] = useState(false);
-  const electron = typeof window !== "undefined" && window.clamavGUI?.isElectron;
-
-  useEffect(() => {
-    if (!electron || !window.clamavGUI) return;
-    void window.clamavGUI.getOpenAtLogin().then((v) => {
-      setOpenAtLogin(!!v);
-      setLoginLoaded(true);
-    });
-  }, [electron]);
-
   return (
     <div className="card fade-in">
       <h2 style={{ marginBottom: "0.25rem" }}>Settings</h2>
@@ -1729,28 +1717,9 @@ function SettingsPanel({
         </p>
       </div>
 
-      {electron ? (
-        <div className="settings-block">
-          <p className="section-label">Desktop (Electron)</p>
-          <label className="settings-check-row">
-            <input
-              type="checkbox"
-              checked={openAtLogin}
-              disabled={!loginLoaded}
-              onChange={(e) => {
-                const v = e.target.checked;
-                setOpenAtLogin(v);
-                void window.clamavGUI?.setOpenAtLogin(v).then((ok) => setOpenAtLogin(!!ok));
-              }}
-            />
-            <span>Open this app at login</span>
-          </label>
-        </div>
-      ) : (
-        <p className="hint" style={{ marginTop: "1rem" }}>
-          “Open at login” is available in the desktop (Electron) build.
-        </p>
-      )}
+      <p className="hint" style={{ marginTop: "1rem" }}>
+        “Open at login” will return as a native command in a future build.
+      </p>
     </div>
   );
 }
