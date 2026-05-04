@@ -46,7 +46,18 @@ See **Features** below for the full list of what the panel can do (dashboard, sc
 
 ## Run from source (no installer)
 
+**macOS / Linux (bash):**
+
 ```bash
+git clone https://github.com/ronpicard/clamav-antivirus-control-gui.git
+cd clamav-antivirus-control-gui
+npm install
+npm run electron
+```
+
+**Windows (PowerShell or Command Prompt):**
+
+```powershell
 git clone https://github.com/ronpicard/clamav-antivirus-control-gui.git
 cd clamav-antivirus-control-gui
 npm install
@@ -90,9 +101,11 @@ npm install
 npm run dist
 ```
 
-Outputs land in **`release/`** (e.g. `.dmg` / `.zip` on macOS, NSIS / portable on Windows, AppImage / `.deb` on Linux). CI can build per OS via **`.github/workflows/electron-release.yml`**.
+Outputs land in **`release/`** (e.g. `.dmg` / `.zip` on macOS, NSIS installer + portable **`.exe`** on Windows, **`.AppImage`** / **`.deb`** on Linux). On your machine, **`npm run dist`** only produces installers for **that** OS (e.g. on a Mac you get macOS artifacts only).
 
-Unsigned macOS builds may require **Right-click → Open** the first time. Code signing is not configured in this repo.
+**GitHub Actions** builds **macOS, Windows, and Linux** installers on every push to `main` / PRs (**`.github/workflows/electron-release.yml`**). Pushing a version tag such as **`v1.0.0`** runs **`.github/workflows/release.yml`**, which uploads all three platforms to a **[GitHub Release](https://github.com/ronpicard/clamav-antivirus-control-gui/releases)**.
+
+**Unsigned builds:** On **macOS**, use **Right-click → Open** the first time. On **Windows**, SmartScreen may show “Windows protected your PC” for an unknown publisher — use **More info → Run anyway** if you trust the build. Code signing is not configured in this repo.
 
 ### App icon (developers)
 
@@ -110,11 +123,17 @@ Run **`npm run dist`** afterward so packaged builds pick up the new icon.
 - **Config paths:** Detected for typical Homebrew (Apple Silicon / Intel), Linux `/etc/clamav`, and Windows under Program Files when applicable.
 - **Cron:** Supported on **Linux and macOS** only. On **Windows**, use Task Scheduler.
 
-## Troubleshooting (macOS app)
+## Troubleshooting (packaged app)
 
-If the window does not appear, check:
+If the window does not appear, check **`server.log`** in the app’s user-data folder:
 
-`~/Library/Application Support/clamav-antivirus-control-gui/server.log`
+| OS | Typical path |
+|----|----------------|
+| **macOS** | `~/Library/Application Support/clamav-antivirus-control-gui/server.log` |
+| **Windows** | `%APPDATA%\clamav-antivirus-control-gui\server.log` (open **Run** → paste `%APPDATA%\clamav-antivirus-control-gui`) |
+| **Linux** | `~/.config/clamav-antivirus-control-gui/server.log` |
+
+If the folder name differs slightly (e.g. product name with spaces), look under the same parent (`Application Support`, `%APPDATA%`, or `~/.config`) for a **clamav**-related directory.
 
 ## License
 
