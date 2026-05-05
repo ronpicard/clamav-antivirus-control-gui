@@ -14,7 +14,10 @@ jobs:
       matrix:
         platform: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 45
+    # 60 matches release.yml. Windows release-profile compile + the new
+    # axum integration test together push past the previous 45m cap on
+    # cold caches (release adds LTO + codegen-units=1 + opt-level=s).
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
