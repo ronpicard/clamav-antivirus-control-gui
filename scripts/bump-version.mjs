@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+export const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 const TARGETS = [
   {
@@ -41,7 +41,7 @@ const TARGETS = [
   },
 ];
 
-function bumpJsonField(raw, key, value) {
+export function bumpJsonField(raw, key, value) {
   const re = new RegExp(`("${key}"\\s*:\\s*)"[^"]*"`);
   if (!re.test(raw)) {
     throw new Error(`field "${key}" not found`);
@@ -49,7 +49,7 @@ function bumpJsonField(raw, key, value) {
   return raw.replace(re, (_m, prefix) => `${prefix}"${value}"`);
 }
 
-function bumpCargoVersion(raw, version) {
+export function bumpCargoVersion(raw, version) {
   const re = /^(version\s*=\s*)"[^"]*"/m;
   if (!re.test(raw)) {
     throw new Error('top-level `version = "..."` not found in Cargo.toml');
@@ -93,4 +93,7 @@ function main() {
   console.log("  5. Push:     git push origin main && git push origin v" + version);
 }
 
-main();
+// Run only when executed directly, so tests can import the helpers.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

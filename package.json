@@ -6,12 +6,14 @@
   "author": "Ron Picard",
   "description": "Desktop UI for ClamAV configuration (Tauri + Rust)",
   "scripts": {
+    "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "render-icon": "node scripts/render-app-icon.mjs",
     "bump-version": "node scripts/bump-version.mjs",
     "build:client": "npm run build --prefix client",
     "prepare:server": "npm ci --prefix server --omit=dev",
     "sync-server-resources": "node scripts/sync-server-resources.mjs",
-    "stage-tauri-bundle": "npm run prepare:server && npm run build:client && npm run sync-server-resources",
+    "fetch-node-sidecar": "node scripts/fetch-node-sidecar.mjs",
+    "stage-tauri-bundle": "npm run fetch-node-sidecar && npm run prepare:server && npm run build:client && npm run sync-server-resources",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

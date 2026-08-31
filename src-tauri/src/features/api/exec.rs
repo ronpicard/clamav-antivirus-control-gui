@@ -110,3 +110,40 @@ where
         stderr,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_reports_spawn_failure_without_panicking() {
+        let out = run(
+            Path::new("/nonexistent/definitely-not-a-binary"),
+            ["--version"],
+            None,
+        )
+        .await;
+
+        assert_eq!(out.code, -1);
+        assert!(!out.ok());
+        assert!(out.stderr.contains("spawn"), "got {:?}", out.stderr);
+    }
+
+    #[test]
+    fn ok_is_true_only_for_exit_code_zero() {
+        assert!(ExecOutput { code: 0, ..Default::default() }.ok());
+        assert!(!ExecOutput { code: 1, ..Default::default() }.ok());
+        assert!(!ExecOutput { code: -1, ..Default::default() }.ok());
+    }
+
+    #[test]
+    fn combined_concatenates_stdout_then_stderr() {
+        let out = ExecOutput {
+            code: 0,
+            stdout: "out".into(),
+            stderr: "err".into(),
+        };
+
+        assert_eq!(out.combined(), "outerr");
+    }
+}

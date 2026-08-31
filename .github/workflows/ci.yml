@@ -62,11 +62,14 @@ jobs:
         working-directory: src-tauri
         run: cargo check --locked
 
-      - name: cargo test (axum router + strangler proxy)
+      - name: node --test (build scripts)
+        run: npm run test:scripts
+
+      - name: cargo test (unit + axum router + strangler proxy)
         working-directory: src-tauri
         # No CLAMAV_GUI_NODE_PORT set: native routes are exercised, proxy
         # fall-through is skipped (it requires a running Node helper).
-        run: cargo test --locked --test api_strangler
+        run: cargo test --locked
 
       - name: Build unsigned bundles (smoke test)
         env:

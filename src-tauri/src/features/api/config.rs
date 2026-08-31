@@ -38,3 +38,46 @@ async fn get_config(
 pub fn routes() -> Router<AppState> {
     Router::new().route("/config/{which}", get(get_config))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn get_config_returns_path_and_content_when_file_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(tmp.path());
+        std::fs::write(&state.clamd_conf, "LogFile /tmp/clamd.log\n").unwrap();
+
+        let Json(body) = get_config(State(state.clone()), Path("clamd".into()))
+            .await
+            .unwrap();
+
+        assert_eq!(body["path"], state.clamd_conf.to_string_lossy().as_ref());
+        assert_eq!(body["content"], "LogFile /tmp/clamd.log\n");
+    }
+
+    #[tokio::test]
+    async fn get_config_rejects_unknown_name_with_bad_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(tmp.path());
+
+        let err = get_config(State(state), Path("bogus".into()))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ApiError::BadRequest(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn get_config_returns_not_found_when_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(tmp.path());
+
+        let err = get_config(State(state), Path("freshclam".into()))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ApiError::NotFound(_)), "got {err:?}");
+    }
+}

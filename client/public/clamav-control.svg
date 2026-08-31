@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">ClamAV Control</title>
+  <rect width="128" height="128" rx="28" fill="#151b23"/>
+  <path d="M64 18 103 32v28c0 26-15 43-39 52C40 103 25 86 25 60V32l39-14Z" fill="#35c98f"/>
+  <path d="m45 63 13 13 27-30" fill="none" stroke="#0d1117" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

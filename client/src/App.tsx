@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AppNavigation, NAV_ITEMS, type TabId } from "./app/navigation";
 import { applyGuidedValues, guideFieldsFor, parseGuidedValues, type GuideField } from "./clamavConfigGuide";
 
 type Health = {
@@ -149,19 +150,6 @@ function TerminalOutputPanel({ logs }: { logs: TerminalLogEntry[] }) {
   );
 }
 
-const TABS = [
-  ["home", "Dashboard", "📊", "See what is working and refresh ClamAV"],
-  ["realtime", "Real-time", "🛡️", "Monitor files in real time"],
-  ["scan", "Scan", "🔎", "Scan files with live progress"],
-  ["quarantine", "Quarantine", "🔒", "View and manage quarantined threats"],
-  ["cron", "Schedules", "⏰", "Automate updates and scans (Mac/Linux)"],
-  ["config", "Config", "⚙️", "Edit clamd and freshclam settings"],
-  ["dns", "DNS", "🌐", "DNS resolver: OpenDNS, Google, Cloudflare, DHCP, custom"],
-  ["settings", "Settings", "🔧", "App preferences"],
-  ["instructions", "Instructions", "📖", "Install ClamAV and use this app"],
-  ["auto-install", "Auto-install", "📦", "Install ClamAV — guided on Mac + Homebrew"],
-] as const;
-
 type ScanSessionState = {
   activeScanId: string | null;
   live: ScanStreamState | null;
@@ -177,7 +165,7 @@ const EMPTY_SCAN_SESSION: ScanSessionState = {
 };
 
 export default function App() {
-  const [tab, setTab] = useState<(typeof TABS)[number][0]>("home");
+  const [tab, setTab] = useState<TabId>("home");
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -312,50 +300,34 @@ export default function App() {
     })();
   }, [health, err, autoEnsureCronDefaults]);
 
+  const activeTab = NAV_ITEMS.find((item) => item.id === tab) ?? NAV_ITEMS[0];
+  const coreProtectionReady =
+    !!health?.clamav.freshclamInstalled &&
+    !!health.clamav.clamdscanInstalled &&
+    !!health.clamav.daemonResponding;
+
   return (
     <div className="app-shell">
-        <header className="app-header">
-          <div className="brand-row">
-            <div className="brand-icon" aria-hidden>
-              <img src="/icon.png" alt="" width={28} height={28} className="brand-icon-img" />
-            </div>
-            <div>
-              <h1>
-                ClamAV Control
-                <span className="brand-version" title={`Version ${__APP_VERSION__}`}>
-                  v{__APP_VERSION__}
-                </span>
-              </h1>
-              <p className="subtitle">Antivirus dashboard for your computer</p>
-            </div>
+      <AppNavigation
+        activeTab={tab}
+        protectionReady={coreProtectionReady}
+        loading={loading}
+        onSelect={setTab}
+      />
+      <main className="app-main">
+        <header className="page-header">
+          <div>
+            <div className="page-eyebrow">{activeTab.group}</div>
+            <h1>{activeTab.label}</h1>
+            <p>{activeTab.title}</p>
           </div>
         </header>
-
-        <div className="nav-shell">
-          <nav className="tabs" aria-label="Main sections">
-            {TABS.map(([id, label, emoji, title]) => (
-              <button
-                key={id}
-                type="button"
-                className={`tab ${tab === id ? "active" : ""}`}
-                onClick={() => setTab(id)}
-                title={title}
-                aria-current={tab === id ? "page" : undefined}
-              >
-                <span className="tab-emoji" aria-hidden>
-                  {emoji}
-                </span>
-                {label}
-              </button>
-            ))}
-          </nav>
-        </div>
 
         {err && (
           <div className="card card-error" role="alert">
             <h2 style={{ color: "var(--danger)", marginBottom: "0.5rem" }}>Cannot reach the app</h2>
             <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.9rem" }}>{err}</p>
-            <button type="button" className="btn btn-primary" style={{ marginTop: "1rem" }} onClick={refresh}>
+            <button type="button" className="btn btn-primary" style={{ marginTop: "1rem" }} onClick={() => void refresh()}>
               Try again
             </button>
           </div>
@@ -391,6 +363,7 @@ export default function App() {
         <div className={`panel-wrap panel-wrap-flex ${tab === "scan" ? "" : "scan-panel-hidden"}`}>
           <ScanPanel health={health} session={scanSession} setSession={setScanSession} onRefresh={refresh} />
         </div>
+      </main>
     </div>
   );
 }
@@ -584,8 +557,9 @@ function Dashboard({
           setBusy(null);
           setDefProgress((p) => (m.ok ? 100 : p));
           const tl: TerminalLogEntry[] = [];
-          if (Array.isArray((m as { terminalLogs?: TerminalLogEntry[] }).terminalLogs)) {
-            tl.push(...(m as { terminalLogs: TerminalLogEntry[] }).terminalLogs);
+          const maybeLogs = (m as { terminalLogs?: TerminalLogEntry[] }).terminalLogs;
+          if (Array.isArray(maybeLogs)) {
+            tl.push(...maybeLogs);
           } else if (m.stdout || m.stderr || typeof m.code === "number") {
             tl.push({
               label: "freshclam",
@@ -1273,6 +1247,7 @@ function ScanPanel({
   const [history, setHistory] = useState<ScanHistoryEntry[]>([]);
   const esRef = useRef<EventSource | null>(null);
   const streamDoneRef = useRef(false);
+  const reconnectsRef = useRef(0);
 
   const { activeScanId, live, scanErr, pendingStart } = session;
   const setActiveScanId = (id: string | null) => setSession((s) => ({ ...s, activeScanId: id }));
@@ -1306,12 +1281,25 @@ function ScanPanel({
   useEffect(() => {
     if (!activeScanId) return;
     streamDoneRef.current = false;
+    reconnectsRef.current = 0;
+    // Give up only after the browser's own reconnect attempts keep failing, so
+    // a brief network blip (or a throttled background tab) doesn't abandon a
+    // scan that is still running server-side.
+    const MAX_RECONNECTS = 6;
     const es = new EventSource(`/api/scan/stream?id=${encodeURIComponent(activeScanId)}`);
     esRef.current = es;
+    const giveUp = (reason: string) => {
+      es.close();
+      esRef.current = null;
+      setActiveScanId(null);
+      if (!streamDoneRef.current) setScanErr(reason);
+    };
     es.onmessage = (ev) => {
       try {
         const m = JSON.parse(ev.data) as ScanStreamState & { type: string; findings?: string[] };
         setPendingStart(false);
+        reconnectsRef.current = 0;
+        setScanErr(null); // clear any transient "reconnecting" notice
         if (m.type === "state") {
           setLive(m);
         } else if (m.type === "done") {
@@ -1328,12 +1316,22 @@ function ScanPanel({
     };
     es.onerror = () => {
       setPendingStart(false);
-      es.close();
-      esRef.current = null;
-      setActiveScanId(null);
-      if (!streamDoneRef.current) {
-        setScanErr(scanErr || "Scan stream disconnected");
+      if (streamDoneRef.current) {
+        es.close();
+        esRef.current = null;
+        return;
       }
+      // readyState CONNECTING means the browser is auto-reconnecting; let it,
+      // up to a bound. CLOSED means a fatal error (e.g. the session expired and
+      // the server returned 404) — no point retrying.
+      if (es.readyState === EventSource.CONNECTING) {
+        reconnectsRef.current += 1;
+        if (reconnectsRef.current <= MAX_RECONNECTS) {
+          setScanErr("Reconnecting to scan…");
+          return;
+        }
+      }
+      giveUp("Scan stream disconnected");
     };
     return () => {
       es.close();

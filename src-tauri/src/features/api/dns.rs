@@ -74,3 +74,54 @@ async fn presets() -> Json<PresetsResponse> {
 pub fn routes() -> Router<AppState> {
     Router::new().route("/dns/presets", get(presets))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn presets_returns_all_seven_in_express_order() {
+        let Json(body) = presets().await;
+
+        let ids: Vec<&str> = body.items.iter().map(|p| p.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "automatic",
+                "opendns",
+                "opendns-family",
+                "google",
+                "cloudflare",
+                "cloudflare-family",
+                "custom",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_and_custom_presets_have_no_servers() {
+        let Json(body) = presets().await;
+
+        for p in &body.items {
+            match p.id {
+                "automatic" | "custom" => assert!(p.servers.is_none(), "{} has servers", p.id),
+                _ => assert_eq!(
+                    p.servers.map(|s| s.len()),
+                    Some(2),
+                    "{} should list primary + secondary",
+                    p.id
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn presets_serialize_with_express_field_names() {
+        let Json(body) = presets().await;
+
+        let json = serde_json::to_value(&body.items[1]).unwrap();
+        assert_eq!(json["id"], "opendns");
+        assert_eq!(json["label"], "OpenDNS");
+        assert_eq!(json["servers"][0], "208.67.222.222");
+    }
+}

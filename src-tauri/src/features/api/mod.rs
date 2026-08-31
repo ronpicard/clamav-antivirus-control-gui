@@ -17,6 +17,7 @@ pub mod config;
 pub mod dns;
 pub mod error;
 pub mod exec;
+pub mod guard;
 pub mod proxy;
 pub mod quarantine;
 pub mod scan;
@@ -48,7 +49,14 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/api", api)
         .fallback_service(static_service)
-        .layer(tower_http::cors::CorsLayer::very_permissive())
+        // Reject cross-origin browser traffic before it reaches any handler.
+        // The app is a same-origin SPA, so it needs no CORS; a permissive CORS
+        // layer here would instead expose every privileged route to drive-by
+        // requests from any web page the user has open.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            guard::require_local_origin,
+        ))
 }
 
 /// Bind the router to `addr` and serve forever.

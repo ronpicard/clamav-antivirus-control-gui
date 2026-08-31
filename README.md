@@ -12,13 +12,13 @@ See **Features** below for the full list of what the panel can do (dashboard, sc
 
 | Layer | Folder | Stack |
 |-------|--------|-------|
-| **Desktop shell** | `src-tauri/` | **Tauri 2** + Rust. Spawns the local helper, awaits health, opens the WebView. |
-| **Local helper** | `server/` | **Node.js / Express** — talks to ClamAV (`freshclam`, `clamdscan`, etc.), DNS, cron. Bound to `127.0.0.1` only. |
+| **Desktop shell + API** | `src-tauri/` | **Tauri 2** + Rust. Runs an in-process **axum** HTTP server that serves the UI and the natively ported `/api/*` routes, proxies the rest to the Node helper (strangler migration), and opens the WebView. |
+| **Legacy helper** | `server/` | **Node.js / Express** — still handles the un-ported routes that talk to ClamAV (`freshclam`, `clamdscan`, etc.), DNS, cron. Bound to `127.0.0.1` only; being retired route-by-route. |
 | **Web UI** | `client/` | **React + TypeScript (Vite)**. Production assets in `client/dist/`. |
 
-At runtime the Tauri shell starts the Node helper on **`127.0.0.1:38471`** (override with **`CLAMAV_GUI_PORT`**), waits for `/api/health`, and points the WebView at that URL — so the existing same-origin React `fetch` and `EventSource` traffic keeps working unchanged.
+At runtime the Tauri shell serves **axum on `127.0.0.1:38471`** (override with **`CLAMAV_GUI_PORT`**) and points the WebView at that URL. Axum answers the natively ported `/api/*` routes itself and forwards everything else to the Node helper on the internal port **`38470`** — so the existing same-origin React `fetch` and `EventSource` traffic keeps working unchanged while routes migrate to Rust.
 
-The Tauri shell launches **system Node.js**; **Node 20+ must be installed and on PATH** for the packaged app. Bundling Node as a Tauri sidecar is tracked in **`REQUIREMENTS.md`** as future work.
+The Tauri shell launches the Node helper on a **bundled Node.js runtime**, shipped with the app as a Tauri sidecar (`scripts/fetch-node-sidecar.mjs` + `bundle.externalBin`). System `node` on PATH is only a fallback for the rare case the sidecar is missing.
 
 ## Features
 
@@ -32,8 +32,8 @@ The Tauri shell launches **system Node.js**; **Node 20+ must be installed and on
 | **Config** | Guided or raw editing of ClamAV config files. |
 | **DNS** | Presets (e.g. OpenDNS, Google, Cloudflare), DHCP / automatic, or custom servers on supported platforms. |
 | **Settings** | Refresh behavior, optional auto-start for real-time monitoring and the ClamAV daemon, optional default cron jobs on app open. |
-| **Instructions** | In-app help and tab overview. |
-| **Auto-install** | Guided ClamAV install via Homebrew on macOS; manual steps for other OSes. |
+| **Help** | In-app help and tab overview. |
+| **Setup** | Guided ClamAV install via Homebrew on macOS; manual steps for other OSes. |
 
 ## Requirements
 
@@ -45,8 +45,10 @@ The Tauri shell launches **system Node.js**; **Node 20+ must be installed and on
 
 ### Runtime (packaged app)
 
-- **Node.js 20+** on PATH (the Tauri shell launches the existing Node helper).
 - **ClamAV** installed and on `PATH` (`freshclam`, `clamdscan`, etc.).
+- Node.js is **bundled** with the app as a Tauri sidecar (staged by
+  `scripts/fetch-node-sidecar.mjs`), so users do not need a system Node
+  install. If the sidecar is missing the shell falls back to `node` on PATH.
 
 ## Build commands (canonical: `make`)
 
@@ -58,6 +60,7 @@ make install         # one-time: install root + client + server deps
 make dev             # run the Tauri desktop app in dev mode
 make build           # build a release bundle for THIS OS
 make check           # cargo check + client build (CI-style smoke)
+make test            # Node script tests + all Rust tests (unit + integration)
 make lint            # TypeScript build + `cargo clippy -D warnings`
 make icons           # regenerate `build/`, `client/public/`, and `src-tauri/icons/`
 make bump-version VERSION=1.1.0   # update version in all 5 places
@@ -107,6 +110,20 @@ cd server && npm start
 
 Open **http://127.0.0.1:3000** (default port; set **`PORT`** if needed). The server serves the built UI from **`client/dist`**, or from **`CLIENT_DIST`** if that environment variable is set.
 
+## Tests
+
+```bash
+make stage    # one-time per checkout: stage resources so the Tauri build script is satisfied
+make test     # Node script tests + all Rust tests
+```
+
+`make test` runs two suites:
+
+- **Node script tests** — `node --test "scripts/*.test.mjs"` (built-in Node test runner, no extra dependencies) covers the version-bump and resource-staging helpers, including a regression test for the v2.0.0 symlink-staging bug.
+- **Rust tests** — `cargo test --locked` in `src-tauri/` runs the colocated unit tests (`#[cfg(test)]` modules next to each `features/` module: DNS presets, config, scan history, quarantine, error mapping, exec, paths) plus the integration test `src-tauri/tests/api_strangler.rs`, which boots the axum router and exercises every natively ported route.
+
+The integration test's proxy fall-through assertions only run when **`CLAMAV_GUI_NODE_PORT`** points at a running Node helper (see the comment at the top of [api_strangler.rs](src-tauri/tests/api_strangler.rs)); without it those assertions are skipped, which keeps `cargo test` deterministic in CI. CI runs both suites on Linux, macOS, and Windows for every push and PR.
+
 ## Build installers
 
 ```bash
@@ -118,7 +135,7 @@ Outputs land under **`src-tauri/target/release/bundle/`**: `.dmg` / `.app` on ma
 
 ### Continuous builds on GitHub
 
-- **`.github/workflows/ci.yml`** runs cargo check + a Tauri build on **Linux, macOS, and Windows** for every push and PR (smoke test).
+- **`.github/workflows/ci.yml`** runs cargo check, the Node script tests, all Rust tests, and a Tauri build on **Linux, macOS, and Windows** for every push and PR.
 - **`.github/workflows/release.yml`** runs the same matrix on a tag push (e.g. **`v1.0.0`**) and uploads all three platforms to a **[GitHub Release](https://github.com/ronpicard/clamav-antivirus-control-gui/releases)** via `tauri-apps/tauri-action`.
 
 **Unsigned builds:** On **macOS**, use **Right-click → Open** the first time. On **Windows**, SmartScreen may show "Windows protected your PC" for an unknown publisher — use **More info → Run anyway** if you trust the build. Code signing is not configured in this repo.

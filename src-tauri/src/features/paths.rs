@@ -31,14 +31,24 @@ pub fn server_log_path(handle: &AppHandle) -> PathBuf {
     dir.join("server.log")
 }
 
+/// Per-user Documents folder. Falls back to `~/Documents` when the platform
+/// has no registered documents dir (headless Linux without xdg-user-dirs),
+/// matching the Node server's `os.homedir() + "Documents"` behavior, and to
+/// the temp dir only as a last resort.
+fn documents_base(handle: &AppHandle) -> PathBuf {
+    if let Ok(d) = handle.path().document_dir() {
+        return d;
+    }
+    if let Ok(home) = handle.path().home_dir() {
+        return home.join("Documents");
+    }
+    std::env::temp_dir()
+}
+
 /// Where ClamAV scans by default. Mirrors Electron app behavior so existing
 /// users keep the same scan folder.
 pub fn scan_root(handle: &AppHandle) -> PathBuf {
-    let documents = handle
-        .path()
-        .document_dir()
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let scan = documents.join("ClamAV-Scan");
+    let scan = documents_base(handle).join("ClamAV-Scan");
     let _ = std::fs::create_dir_all(&scan);
     scan
 }
@@ -46,11 +56,7 @@ pub fn scan_root(handle: &AppHandle) -> PathBuf {
 /// Default quarantine directory (`~/Documents/ClamAV-Quarantine`).
 /// Mirrors `server/index.js` § `QUARANTINE_DIR`.
 pub fn quarantine_dir(handle: &AppHandle) -> PathBuf {
-    let documents = handle
-        .path()
-        .document_dir()
-        .unwrap_or_else(|_| std::env::temp_dir());
-    documents.join("ClamAV-Quarantine")
+    documents_base(handle).join("ClamAV-Quarantine")
 }
 
 /// Resolved paths to `clamd.conf` / `freshclam.conf` for the host platform.
@@ -93,5 +99,27 @@ pub fn clamav_conf_paths() -> ClamavConfPaths {
     ClamavConfPaths {
         clamd: PathBuf::from("/etc/clamav/clamd.conf"),
         freshclam: PathBuf::from("/etc/clamav/freshclam.conf"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conf_paths_are_absolute_and_named_for_their_daemon() {
+        let paths = clamav_conf_paths();
+
+        assert!(paths.clamd.is_absolute());
+        assert!(paths.freshclam.is_absolute());
+        assert!(paths.clamd.ends_with("clamd.conf"));
+        assert!(paths.freshclam.ends_with("freshclam.conf"));
+    }
+
+    #[test]
+    fn clamd_and_freshclam_confs_live_in_the_same_directory() {
+        let paths = clamav_conf_paths();
+
+        assert_eq!(paths.clamd.parent(), paths.freshclam.parent());
     }
 }

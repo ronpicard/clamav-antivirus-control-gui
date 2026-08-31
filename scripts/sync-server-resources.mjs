@@ -12,12 +12,15 @@
  *   src-tauri/resources/client/dist/   (built React app)
  *
  * Implementation notes:
- * * We use `fs.cpSync(..., { recursive: true })` rather than a hand-rolled
- *   walker. `npm ci` can produce hoisted symlinks (e.g. on Linux/macOS for
- *   peer-deduped packages), and a naive `Dirent.isDirectory() / isFile()`
- *   walker silently skips symlinks, leaving Tauri's bundler dangling at
- *   `resources/server/node_modules/<pkg> doesn't exist`. `fs.cpSync` follows
- *   them via `dereference: true`.
+ * * We use `fs.cpSync(..., { recursive: true, dereference: true })` rather
+ *   than a hand-rolled walker. `npm ci` can produce hoisted symlinks (e.g.
+ *   on Linux/macOS for peer-deduped packages), and a naive
+ *   `Dirent.isDirectory() / isFile()` walker silently skips symlinks,
+ *   leaving Tauri's bundler dangling at
+ *   `resources/server/node_modules/<pkg> doesn't exist`. `fs.cpSync` stages
+ *   those entries (depending on the Node version, either materialized or as
+ *   links that resolve to the original package) — covered by the regression
+ *   test in `sync-server-resources.test.mjs`.
  */
 import fs from "fs";
 import path from "path";
@@ -32,9 +35,9 @@ const STAGE_ROOT = path.join(root, "src-tauri", "resources");
 const SERVER_DEST = path.join(STAGE_ROOT, "server");
 const CLIENT_DIST_DEST = path.join(STAGE_ROOT, "client", "dist");
 
-const SERVER_FILTER = (src) => !src.split(path.sep).includes(".git");
+export const SERVER_FILTER = (src) => !src.split(path.sep).includes(".git");
 
-function rmrf(p) {
+export function rmrf(p) {
   if (!fs.existsSync(p)) return;
   fs.rmSync(p, { recursive: true, force: true });
 }
@@ -46,7 +49,7 @@ function ensure(name, src) {
   }
 }
 
-function copyTree(src, dest, opts = {}) {
+export function copyTree(src, dest, opts = {}) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.cpSync(src, dest, {
     recursive: true,
@@ -71,4 +74,7 @@ function main() {
   );
 }
 
-main();
+// Run only when executed directly, so tests can import the helpers.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

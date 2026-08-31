@@ -45,7 +45,7 @@ fn node_port() -> Option<u16> {
         .and_then(|s| s.parse().ok())
 }
 
-fn build_state(proxy_port: Option<u16>) -> AppState {
+fn build_state(proxy_port: Option<u16>, public_port: u16) -> AppState {
     let root = workspace_root();
     let host = clamav_control_lib::features::paths::clamav_conf_paths();
     AppState::new(AppStateInner {
@@ -58,6 +58,7 @@ fn build_state(proxy_port: Option<u16>) -> AppState {
             .unwrap_or_else(std::env::temp_dir)
             .join("ClamAV-Quarantine"),
         client_dist: root.join("client").join("dist"),
+        public_port,
         proxy_port,
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -71,7 +72,7 @@ async fn native_routes_and_proxy_fallthrough() {
     let proxy_port = node_port();
     let port = pick_port();
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-    let state = build_state(proxy_port);
+    let state = build_state(proxy_port, port);
 
     tokio::spawn({
         let state = state.clone();
@@ -154,4 +155,68 @@ async fn native_routes_and_proxy_fallthrough() {
     } else {
         eprintln!("CLAMAV_GUI_NODE_PORT unset — skipping proxy assertions");
     }
+}
+
+/// The local-origin guard must reject cross-origin browser traffic before it
+/// reaches any handler, while still allowing the app's own same-origin
+/// requests. This is the fix for the permissive-CORS / drive-by-CSRF hole.
+#[tokio::test(flavor = "multi_thread")]
+async fn guard_blocks_cross_origin_but_allows_same_origin() {
+    let port = pick_port();
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let state = build_state(None, port);
+
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _ = api::serve(addr, state).await;
+        }
+    });
+
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/dns/presets");
+
+    // A page on another site: browser sends a foreign Origin → 403.
+    let r = client
+        .get(&url)
+        .header("Origin", "http://evil.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "foreign Origin must be rejected");
+
+    // Modern engines tag cross-origin requests even without an Origin header.
+    let r = client
+        .get(&url)
+        .header("Sec-Fetch-Site", "cross-site")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "Sec-Fetch-Site: cross-site must be rejected");
+
+    // DNS-rebinding: attacker domain resolves to loopback, but Host is foreign.
+    let r = client
+        .get(&url)
+        .header("Host", "evil.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "non-loopback Host must be rejected");
+
+    // The app itself: same-origin Origin + loopback Host → allowed.
+    let r = client
+        .get(&url)
+        .header("Origin", format!("http://127.0.0.1:{port}"))
+        .header("Sec-Fetch-Site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "same-origin request must pass");
 }

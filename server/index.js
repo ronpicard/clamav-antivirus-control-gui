@@ -73,7 +73,67 @@ function cronUnsupported(res) {
 }
 
 const app = express();
-app.use(cors({ origin: true }));
+
+// ─── Local-origin guard ───────────────────────────────────────────────────────
+// This server binds to loopback, but any browser tab on the machine can still
+// reach it. Without a check, a random web page could issue cross-origin requests
+// that drive privileged actions (change DNS, disable the firewall, overwrite
+// clamd.conf, install cron jobs). In the packaged app the webview never talks to
+// this port directly — the axum proxy relays its requests (forwarding the real
+// browser Origin / Sec-Fetch-Site) — so we reject anything that is not
+// same-origin with the app.
+//
+// Allowed origins: this server's own PORT (dev: `node index.js` + browser), plus
+// the public axum port passed as CLAMAV_PUBLIC_PORT (packaged app).
+const ALLOWED_ORIGINS = (() => {
+  const ports = new Set([PORT]);
+  const pub = Number(process.env.CLAMAV_PUBLIC_PORT);
+  if (Number.isInteger(pub) && pub > 0) ports.add(pub);
+  const hosts = ["127.0.0.1", "localhost", "[::1]"];
+  const set = new Set();
+  for (const p of ports) for (const h of hosts) set.add(`http://${h}:${p}`);
+  return set;
+})();
+
+function hostIsLoopback(hostHeader) {
+  if (!hostHeader) return true; // non-browser client (health probe, curl, tests)
+  const h = String(hostHeader).trim();
+  // Bracketed IPv6: `[::1]` or `[::1]:port`.
+  if (h.startsWith("[")) {
+    return h.slice(1).split("]")[0] === "::1";
+  }
+  // Otherwise strip a trailing `:port`, but not when the remainder is itself a
+  // bare IPv6 literal (still contains a colon, e.g. `::1`).
+  let host = h;
+  const lastColon = h.lastIndexOf(":");
+  if (lastColon !== -1) {
+    const portPart = h.slice(lastColon + 1);
+    const leftPart = h.slice(0, lastColon);
+    if (/^\d+$/.test(portPart) && !leftPart.includes(":")) host = leftPart;
+  }
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+app.use((req, res, next) => {
+  if (!hostIsLoopback(req.headers["host"])) {
+    return res.status(403).json({ error: "Forbidden: request Host is not a loopback address" });
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (site === "cross-site" || site === "same-site") {
+    return res.status(403).json({ error: "Forbidden: cross-origin request blocked" });
+  }
+  const origin = req.headers["origin"];
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    return res.status(403).json({ error: "Forbidden: origin not allowed" });
+  }
+  next();
+});
+
+app.use(
+  cors({
+    origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.has(origin)),
+  }),
+);
 app.use(express.json({ limit: "2mb" }));
 
 const clientDist =
@@ -115,7 +175,9 @@ const EXTRA_PATH_DIRS = [
 
 function resolveBinary(name) {
   const dirs = (process.env.PATH || "").split(process.platform === "win32" ? ";" : ":");
-  const exts = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
+  // No .cmd/.bat: Node 20.12+ refuses to spawn them without shell:true
+  // (CVE-2024-27980), and ClamAV ships .exe binaries anyway.
+  const exts = process.platform === "win32" ? ["", ".exe"] : [""];
   for (const dir of dirs) {
     for (const ext of exts) {
       const full = path.join(dir, name + ext);
@@ -130,6 +192,10 @@ function resolveBinary(name) {
 const CLAMDSCAN_BIN = resolveBinary("clamdscan");
 const CLAMSCAN_BIN = resolveBinary("clamscan");
 const FRESHCLAM_BIN = resolveBinary("freshclam");
+
+// clamdscan file handoff: --fdpass (Unix fd-passing) does not exist on the
+// Windows build; stream file contents over the clamd socket there instead.
+const CLAMDSCAN_PASS_FLAG = process.platform === "win32" ? "--stream" : "--fdpass";
 
 function runCmd(cmd, args, opts = {}) {
   const { env: envExtra, timeout, cwd, ...spawnOpts } = opts;
@@ -232,7 +298,7 @@ async function tryClamdPing() {
       : fsSync.existsSync("/bin/true")
         ? "/bin/true"
         : "/dev/null";
-  attempts.push({ args: ["--fdpass", probeFile], label: "fdpass probe" });
+  attempts.push({ args: [CLAMDSCAN_PASS_FLAG, probeFile], label: `${CLAMDSCAN_PASS_FLAG} probe` });
 
   let last = "";
   for (const { args, label } of attempts) {
@@ -249,9 +315,9 @@ async function tryClamdPing() {
 /** Build clamdscan args for one-shot scanning (non-streaming). */
 async function buildClamdscanScanArgs(targetPath) {
   if (fsSync.existsSync(CLAMD_CONF)) {
-    return ["--config-file", CLAMD_CONF, "--fdpass", "-v", targetPath];
+    return ["--config-file", CLAMD_CONF, CLAMDSCAN_PASS_FLAG, "-v", targetPath];
   }
-  return ["--fdpass", "-v", targetPath];
+  return [CLAMDSCAN_PASS_FLAG, "-v", targetPath];
 }
 
 /** Build clamscan args for streaming per-file output in live scan sessions. */
@@ -269,9 +335,20 @@ function buildClamscanArgs(targets) {
     }
   }
   try { fsSync.mkdirSync(QUARANTINE_DIR, { recursive: true }); } catch { /* ignore */ }
+  // Don't descend into the quarantine folder. It usually lives under a scanned
+  // dir (~/Documents), so without this every scan re-detects already-quarantined
+  // malware — inflating the infected count and having clamscan re-`--move` files
+  // onto themselves. `--exclude-dir` takes a POSIX regex matched against each
+  // directory path; anchor it to the (regex-escaped) quarantine path so it
+  // excludes that folder and its subtree only.
+  args.push(`--exclude-dir=^${regexEscape(QUARANTINE_DIR)}`);
   args.push(`--move=${QUARANTINE_DIR}`);
   args.push(...paths);
   return args;
+}
+
+function regexEscape(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function readFileSafeSync(p) {
@@ -3779,6 +3856,15 @@ app.post("/api/cron", async (req, res) => {
   const { schedule, command, comment } = req.body || {};
   if (typeof schedule !== "string" || typeof command !== "string") {
     return res.status(400).json({ error: "schedule and command are required strings" });
+  }
+  // A crontab is line-oriented: a newline in any field would inject additional
+  // crontab entries (e.g. a second, hidden job). Reject control characters
+  // outright rather than trying to sanitize them.
+  if (/[\r\n]/.test(schedule) || /[\r\n]/.test(command)) {
+    return res.status(400).json({ error: "schedule and command must not contain newlines" });
+  }
+  if (typeof comment === "string" && /[\r\n]/.test(comment)) {
+    return res.status(400).json({ error: "comment must not contain newlines" });
   }
   if (!/^\S+\s+\S+\s+\S+\s+\S+\s+\S+/.test(schedule.trim())) {
     return res.status(400).json({ error: "schedule must be five cron fields (minute hour dom month dow)" });

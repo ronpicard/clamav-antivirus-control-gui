@@ -29,8 +29,10 @@ Source of truth for product, runtime, and build requirements of
 
 ## Build / runtime
 
-- Runtime: **Node.js 20+** must be installed on PATH (Tauri shell spawns
-  the existing Node helper). This is **temporary** — see "Planned" below.
+- Runtime: the Node helper runs on a **bundled Node.js sidecar**
+  (`scripts/fetch-node-sidecar.mjs` stages it; `bundle.externalBin` ships
+  it) — no system Node needed. PATH `node` is only a fallback. The helper
+  itself is still being retired — see "Planned" below.
 - Build: **Rust stable** (1.77+), **Node.js 20+**, and **GNU Make**.
   Linux builders need WebKitGTK and GTK dev headers (see
   `.github/workflows/ci.yml`).
@@ -58,9 +60,12 @@ Source of truth for product, runtime, and build requirements of
   - **Phase 5 — Realtime watcher in Rust**: replace Node `fswatch` with
     the `notify` crate; port `/api/realtime/{status, start, stop, events}`.
   - **Phase 6 — Cutover**: delete `server/`, `prepare:server`, drop the
-    `nodejs` `.deb` dependency, remove the proxy module and proxy port.
-- **Bundle Node.js as a Tauri sidecar** as an interim if the full Rust
-  port slips, so end users do not need to install Node manually.
+    Node sidecar (`fetch-node-sidecar` + `bundle.externalBin`), remove
+    the proxy module and proxy port.
+- ~~**Bundle Node.js as a Tauri sidecar**~~ — **DONE.**
+  `scripts/fetch-node-sidecar.mjs` downloads the pinned official Node
+  runtime (checksum-verified; universal binary on macOS), Tauri bundles it
+  via `bundle.externalBin`, and the shell prefers it over PATH `node`.
 - **"Open at login"** as a native Tauri command (regressed during the
   Electron → Tauri swap).
 - **macOS Endpoint Security** ("block before open" preventative
@@ -84,7 +89,9 @@ Source of truth for product, runtime, and build requirements of
 
 - **CI on `main`** must build green on `macos-latest`, `ubuntu-latest`, and
   `windows-latest` (`.github/workflows/ci.yml`). This validates resource
-  staging, `cargo check --locked`, and a real Tauri bundle on every OS.
+  staging, `cargo check --locked`, the test suites (`make test`: Node
+  script tests + Rust unit and integration tests), and a real Tauri bundle
+  on every OS.
 - **macOS smoke** (manual): `make dev` → `/api/health`, DNS, firewall, daemon,
   real-time monitor endpoints all return `200` with populated payloads.
 - **Windows / Linux smoke** beyond CI build is manual and gated on having

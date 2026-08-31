@@ -49,8 +49,10 @@ pub fn run() {
                 let server = match ServerHandle::start(
                     &resources_root,
                     &scan_root,
+                    &quarantine_dir,
                     &user_log,
                     proxy_port,
+                    port,
                 ) {
                     Ok(s) => s,
                     Err(e) => {
@@ -73,6 +75,7 @@ pub fn run() {
                     scan_root: scan_root.clone(),
                     quarantine_dir,
                     client_dist,
+                    public_port: port,
                     proxy_port: Some(proxy_port),
                     http: reqwest::Client::builder()
                         .pool_idle_timeout(Duration::from_secs(30))

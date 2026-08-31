@@ -32,6 +32,9 @@
       "resources/server/**/*",
       "resources/client/dist/**/*"
     ],
+    "externalBin": [
+      "binaries/node"
+    ],
     "macOS": {
       "minimumSystemVersion": "10.15"
     },
@@ -44,10 +47,6 @@
         "displayLanguageSelector": false
       }
     },
-    "linux": {
-      "deb": {
-        "depends": ["nodejs"]
-      }
-    }
+    "linux": {}
   }
 }

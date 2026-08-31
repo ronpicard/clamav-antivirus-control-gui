@@ -8,7 +8,47 @@ project follows semantic versioning.
 
 ## [Unreleased]
 
-_Nothing yet — additions accumulate here for the next release._
+### Added
+- **Unit test suites** alongside the existing integration test, all run by
+  the new **`make test`** target and on every CI push:
+  - Rust `#[cfg(test)]` modules colocated with each ported feature
+    (`src-tauri/src/features/`): DNS presets, config GET, scan history,
+    quarantine listing, API error mapping, exec wrapper, ClamAV path
+    resolution.
+  - Node built-in test runner (`node --test`) suites for the build scripts
+    (`scripts/*.test.mjs`): version bumping and resource staging, including
+    a **regression test** for the 2.0.0 symlink resource-staging fix.
+- `tempfile` as a Rust dev-dependency (test-only temp directories).
+
+### Changed
+- **UI redesign** ported from the `clamav-antivirus-gui` repo: the top
+  emoji tab bar is replaced by a grouped sidebar (Protection / System /
+  Support) with `lucide-react` icons, a brand block with version badge, a
+  live protection-status strip, and per-page headers (section eyebrow,
+  title, description). The nav collapses to a horizontal scroller on
+  narrow windows. Two tabs were renamed to match: **Instructions → Help**
+  and **Auto-install → Setup**. New SVG favicon (`clamav-control.svg`).
+  On large / fullscreen windows the sidebar pins to the window edge and
+  the content column centers in the remaining space (no more dead
+  gutters), with a subtle ambient gradient behind the content. The
+  content column is now fluid — it widens up to 1560px (previously
+  capped at 1030px) with viewport-scaled side padding, so panels
+  expand on big windows and shrink cleanly down to the narrow-window
+  breakpoint.
+- CI now runs the full `cargo test --locked` (unit + integration) and the
+  Node script tests on all three OSes, instead of only the axum
+  integration test.
+
+### Fixed
+- **"Try again" after a connection error** silently refreshed without
+  showing the loading state (the click event object was passed as the
+  `silent` flag). It now performs a normal, visible refresh. The client
+  now also passes `tsc --noEmit` cleanly (two latent type errors fixed).
+- **README architecture description** was stale: it said the Tauri shell
+  starts the Node helper on port `38471`. Corrected to the strangler
+  layout that shipped in 2.0.0 — axum serves `127.0.0.1:38471` and
+  forwards un-ported routes to the Node helper on internal port `38470`.
+  `RELEASE.md` § 7 updated to match (its steps 1–2 are done).
 
 ## [2.0.0] — 2026-05-04
 

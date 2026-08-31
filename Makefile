@@ -17,7 +17,7 @@ VERSION        ?=
 # ---- Convenience -----------------------------------------------------------
 .DEFAULT_GOAL  := help
 .PHONY: help install install-root install-client install-server install-tauri \
-        dev build build-debug check lint stage clean clean-all \
+        dev build build-debug check lint test stage clean clean-all \
         icons render-icon tauri-icons \
         bump-version release pre-release-check \
         smoke
@@ -42,8 +42,9 @@ install-server: ## Install server PRODUCTION npm deps (matches release bundle).
 install-tauri: ## Pull Rust crates into local cargo cache without compiling.
 	cd $(TAURI_DIR) && $(CARGO) fetch
 
-# ---- Stage Tauri inputs (server tree + built UI) ---------------------------
-stage: ## Build client, install server prod deps, sync resources/.
+# ---- Stage Tauri inputs (server tree + built UI + Node sidecar) ------------
+stage: ## Build client, install server prod deps, sync resources/, fetch Node sidecar.
+	$(NPM) run fetch-node-sidecar
 	$(NPM) run build:client
 	$(NPM) run prepare:server
 	$(NPM) run sync-server-resources
@@ -61,12 +62,19 @@ build-debug: ## Build a debug bundle (faster, larger; for local smoke tests).
 
 # ---- Verification ----------------------------------------------------------
 check: ## cargo check (Tauri shell) + client production build.
+	$(NPM) run fetch-node-sidecar
 	cd $(TAURI_DIR) && $(CARGO) check --locked
 	$(NPM) run build:client
 
 lint: ## TypeScript build + cargo clippy (warnings as errors).
+	$(NPM) run fetch-node-sidecar
 	$(NPM) run build:client
 	cd $(TAURI_DIR) && $(CARGO) clippy --locked --all-targets -- -D warnings
+
+test: ## Node script tests + all Rust tests (unit + integration). Needs staged resources (`make stage`).
+	$(NPM) run fetch-node-sidecar
+	$(NPM) run test:scripts
+	cd $(TAURI_DIR) && $(CARGO) test --locked
 
 # ---- Icons -----------------------------------------------------------------
 icons: render-icon tauri-icons ## Regenerate app icons end-to-end.
@@ -82,9 +90,9 @@ clean: ## Remove build artifacts (keeps node_modules and cargo cache).
 	rm -rf $(CLIENT_DIR)/dist
 	rm -rf $(TAURI_DIR)/resources $(TAURI_DIR)/gen $(TAURI_DIR)/target/release $(TAURI_DIR)/target/debug
 
-clean-all: clean ## Also remove node_modules and cargo target.
+clean-all: clean ## Also remove node_modules, cargo target, and the Node sidecar.
 	rm -rf node_modules $(CLIENT_DIR)/node_modules $(SERVER_DIR)/node_modules
-	rm -rf $(TAURI_DIR)/target
+	rm -rf $(TAURI_DIR)/target $(TAURI_DIR)/binaries
 
 # ---- Versioning + release flow --------------------------------------------
 bump-version: ## Bump the version everywhere. Usage: `make bump-version VERSION=1.1.0`

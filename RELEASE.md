@@ -132,7 +132,7 @@ CI does **not** code-sign — see [§ 6](#6-code-signing).
 
 ### Pre-release smoke test (CI)
 
-Every push and PR runs **`.github/workflows/ci.yml`**, which does `cargo check --locked` and a Tauri build on **all three OSes** (no upload). If CI is red on `main`, do not tag.
+Every push and PR runs **`.github/workflows/ci.yml`**, which does `cargo check --locked`, the Node script tests (`npm run test:scripts`), all Rust tests (`cargo test --locked` — unit tests plus the axum integration test), and a Tauri build on **all three OSes** (no upload). If CI is red on `main`, do not tag.
 
 ---
 
@@ -162,6 +162,7 @@ Before tagging:
 
 - [ ] `make build` passes locally.
 - [ ] `make check` passes.
+- [ ] `make test` passes.
 - [ ] CI on `main` is green.
 - [ ] `CHANGELOG.md` has a populated section for the new version.
 - [ ] `make bump-version VERSION=<ver>` ran cleanly and the version badge in the running app shows the new value.
@@ -198,11 +199,11 @@ If signing is added later, the env vars to plumb into CI are typically:
 
 ## 7. Migration: dropping the runtime Node dependency
 
-The packaged app currently still spawns a **Node helper** (the original Express server) on **`127.0.0.1:38471`**. Removing that requirement is tracked work, not part of every release:
+The packaged app currently still spawns a **Node helper** (the original Express server) on the internal port **`38470`**; the public port **`127.0.0.1:38471`** is served by the in-process **axum** server, which forwards un-ported routes to the helper. Removing the Node requirement is tracked work, not part of every release:
 
-1. Stand up a **Rust HTTP server** (likely **axum**) inside the Tauri shell.
-2. Add a **reverse proxy** so the Rust server forwards unmigrated routes to the Node helper.
-3. Migrate endpoints feature-by-feature (`/api/health`, then DNS, scan, real-time, cron, firewall, install/uninstall, …) — strangler pattern.
+1. ~~Stand up a **Rust HTTP server** (**axum**) inside the Tauri shell.~~ Done (v2.0.0).
+2. ~~Add a **reverse proxy** so the Rust server forwards unmigrated routes to the Node helper.~~ Done (v2.0.0).
+3. Migrate endpoints feature-by-feature — strangler pattern. In progress: read-only DNS presets, scan history, quarantine list, and config GET are native; see `REQUIREMENTS.md` § Planned for the phase plan.
 4. Once all endpoints are native, delete the Node spawn, server tree, and the `nodejs` `.deb` dependency.
 
 Until that work lands, **`Node 20+` on PATH is a runtime requirement** for end users — see `REQUIREMENTS.md` and the README's **Requirements** section.

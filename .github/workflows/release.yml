@@ -73,8 +73,10 @@ jobs:
           releaseBody: |
             Unsigned desktop builds for macOS, Windows, and Linux.
 
-            **Runtime requirement:** Node.js 20+ must be installed and on PATH.
-            ClamAV Control launches a local Node helper to talk to ClamAV.
+            Node.js is bundled with the app — no separate install needed.
+            **Runtime requirement:** ClamAV itself must be installed
+            (Homebrew, your Linux package manager, or the Windows
+            installer from clamav.net).
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

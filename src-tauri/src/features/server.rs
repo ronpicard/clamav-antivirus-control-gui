@@ -41,8 +41,10 @@ impl ServerHandle {
     pub fn start(
         resources_root: &Path,
         scan_root: &Path,
+        quarantine_dir: &Path,
         log_path: &Path,
         port: u16,
+        public_port: u16,
     ) -> Result<Self, String> {
         let server_dir = resources_root.join("server");
         let server_entry = server_dir.join("index.js");
@@ -90,6 +92,14 @@ impl ServerHandle {
             .env("BIND_HOST", "127.0.0.1")
             .env("CLIENT_DIST", &client_dist)
             .env("SCAN_ROOT", scan_root)
+            // Keep Node's quarantine path identical to the native axum
+            // handlers' (documents dir can be redirected, e.g. OneDrive).
+            .env("QUARANTINE_DIR", quarantine_dir)
+            // The public origin the webview uses. Node only ever sees requests
+            // relayed by the axum proxy (which carry the browser's real Origin
+            // / Sec-Fetch-Site), so this lets Node reject a browser that tries
+            // to reach its loopback port directly, bypassing the axum guard.
+            .env("CLAMAV_PUBLIC_PORT", public_port.to_string())
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
@@ -206,10 +216,23 @@ async fn http_probe(url: &str) -> bool {
 }
 
 fn locate_node() -> Result<PathBuf, String> {
+    // Prefer the Node runtime bundled as a Tauri sidecar (staged by
+    // `scripts/fetch-node-sidecar.mjs`, declared in `bundle.externalBin`).
+    // The bundler drops it next to the app executable, named plain `node`.
+    if let Some(sidecar) = bundled_node() {
+        return Ok(sidecar);
+    }
     if let Some(p) = which("node") {
         return Ok(p);
     }
-    Err("`node` was not found on PATH. Install Node.js 20+ and try again.".into())
+    Err("Node.js runtime not found: the bundled sidecar is missing and `node` is not on PATH. Reinstall the app, or install Node.js 20+.".into())
+}
+
+fn bundled_node() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let name = if cfg!(windows) { "node.exe" } else { "node" };
+    let candidate = exe.parent()?.join(name);
+    candidate.is_file().then_some(candidate)
 }
 
 #[cfg(unix)]
