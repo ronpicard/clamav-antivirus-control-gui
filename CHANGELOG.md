@@ -9,6 +9,12 @@ project follows semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Stale UI after updating.** The axum server served `index.html` with no
+  `Cache-Control` header (dropping the Node helper's `no-store` behavior
+  during the strangler port), so macOS's WKWebView disk cache could keep
+  showing an old page — and through it an old JS bundle — across app
+  launches and even version bumps. HTML responses are now
+  `no-cache, no-store, must-revalidate`; hashed assets stay cacheable.
 - **`bump-version` now also updates `src-tauri/Cargo.lock`** (the crate's
   own entry). Previously the lockfile lagged behind `Cargo.toml` after a
   bump, which broke CI's `--locked` builds until `cargo check` regenerated

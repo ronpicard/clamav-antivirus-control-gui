@@ -157,6 +157,53 @@ async fn native_routes_and_proxy_fallthrough() {
     }
 }
 
+/// HTML must be served with `Cache-Control: no-store` so WKWebView never
+/// shows a stale `index.html` (and through it an old JS bundle) after an
+/// update. Hashed assets carry no such header — their names change instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn html_is_served_with_no_store() {
+    let port = pick_port();
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let state = build_state(None, port);
+
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _ = api::serve(addr, state).await;
+        }
+    });
+
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Requires `make stage` (client/dist present), same as the other tests.
+    let r = reqwest::Client::new()
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "GET / serves index.html");
+    let ct = r
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(ct.starts_with("text/html"), "content-type was {ct:?}");
+    let cc = r
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cc.contains("no-store"),
+        "index.html must be no-store, got {cc:?}"
+    );
+}
+
 /// The local-origin guard must reject cross-origin browser traffic before it
 /// reaches any handler, while still allowing the app's own same-origin
 /// requests. This is the fix for the permissive-CORS / drive-by-CSRF hole.

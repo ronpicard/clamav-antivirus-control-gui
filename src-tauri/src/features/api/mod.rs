@@ -25,11 +25,37 @@ pub mod state;
 
 use std::net::SocketAddr;
 
-use axum::Router;
+use axum::{
+    extract::Request,
+    http::header,
+    middleware::Next,
+    response::Response,
+    Router,
+};
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
 
 use self::state::AppState;
+
+/// Forbid caching of HTML responses, mirroring the Node helper's static
+/// config. Without this, WKWebView's disk cache can keep showing a stale
+/// `index.html` (and through it, an old JS bundle) across app launches.
+/// Hashed assets are safe to cache — their filenames change with content.
+async fn no_cache_html(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let is_html = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    if is_html {
+        res.headers_mut().insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        );
+    }
+    res
+}
 
 /// Build the public axum router for the GUI.
 pub fn build_router(state: AppState) -> Router {
@@ -49,6 +75,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/api", api)
         .fallback_service(static_service)
+        .layer(axum::middleware::from_fn(no_cache_html))
         // Reject cross-origin browser traffic before it reaches any handler.
         // The app is a same-origin SPA, so it needs no CORS; a permissive CORS
         // layer here would instead expose every privileged route to drive-by
