@@ -11,7 +11,7 @@ export function InstructionsPanel() {
         <div className="help-body">
           <ol className="instructions-steps">
             <li><strong>Install ClamAV</strong> — use the Auto-install tab (macOS / Homebrew) or your OS package manager.</li>
-            <li><strong>Check the Dashboard</strong> — all indicators should be green.</li>
+            <li><strong>Check the Status page</strong> — the shield should say “You're protected”.</li>
             <li><strong>Update definitions</strong> — click “Update definitions” to fetch the latest signatures.</li>
             <li><strong>Run a scan</strong> — go to Scan, pick Standard / Full / Custom, and start.</li>
           </ol>
@@ -42,12 +42,12 @@ export function InstructionsPanel() {
         <summary>App tabs explained</summary>
         <div className="help-body">
           <dl className="tab-explainer">
-            <dt>Dashboard</dt><dd>Status overview. Start/stop daemon, update definitions, toggle firewall.</dd>
-            <dt>Auto-install</dt><dd>One-click install/uninstall on macOS. Manual commands for other platforms.</dd>
+            <dt>Status</dt><dd>Protection overview: run a scan, toggle real-time protection and firewall, update definitions. Engine controls live under “Advanced”.</dd>
+            <dt>Setup</dt><dd>One-click install/uninstall on macOS. Manual commands for other platforms.</dd>
             <dt>Scan</dt><dd>Standard, Full, or Custom scan with live file log. Threats are auto-quarantined.</dd>
             <dt>Quarantine</dt><dd>Review, restore, or delete quarantined files.</dd>
             <dt>Schedules</dt><dd>Cron jobs for automatic updates and scans (macOS/Linux).</dd>
-            <dt>Config</dt><dd>Edit ClamAV config files in Guided or Raw mode.</dd>
+            <dt>Engine config</dt><dd>Edit ClamAV config files in Guided or Raw mode.</dd>
             <dt>DNS</dt><dd>Optional resolver presets (OpenDNS, Google, Cloudflare, DHCP, custom) for the active network.</dd>
             <dt>Settings</dt><dd>Refresh status, auto-start real-time monitoring, optional daemon/cron setup on app open, open-at-login (desktop).</dd>
           </dl>

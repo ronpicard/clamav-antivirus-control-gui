@@ -26,7 +26,7 @@ function autoInstallAvailabilityNote(st: InstallStatus): string {
   if (st.platform === "win32") {
     return "Download the installer from clamav.net/downloads.";
   }
-  return "Install ClamAV manually, then check the Dashboard.";
+  return "Install ClamAV manually, then check the Status page.";
 }
 
 function ManualStepList({ steps, onCopy }: { steps: { title: string; command: string }[]; onCopy: (cmd: string) => void }) {
@@ -208,7 +208,7 @@ export function AutoInstallPanel({
 
       {ready && (
         <p className="hint install-ready-note">
-          ClamAV is ready. Check the <strong>Dashboard</strong> for status.
+          ClamAV is ready. Check the <strong>Status</strong> page.
         </p>
       )}
 

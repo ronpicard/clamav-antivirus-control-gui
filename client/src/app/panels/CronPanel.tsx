@@ -105,7 +105,7 @@ export function CronPanel() {
       <div className="card fade-in">
         <p className="hint">
           Cron is not available on Windows. Use <strong>Task Scheduler</strong> to run{" "}
-          <code>freshclam</code> or <code>clamdscan</code> on a schedule. Use the Dashboard for one-off updates
+          <code>freshclam</code> or <code>clamdscan</code> on a schedule. Use the Status page for one-off updates
           and scans.
         </p>
       </div>

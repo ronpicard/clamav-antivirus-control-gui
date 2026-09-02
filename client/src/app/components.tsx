@@ -27,11 +27,13 @@ export function Toggle({
   disabled,
   onChange,
   label,
+  ariaLabel,
 }: {
   checked: boolean;
   disabled?: boolean;
   onChange: (checked: boolean) => void;
-  label: string;
+  label?: string;
+  ariaLabel?: string;
 }) {
   return (
     <label className={`switch ${disabled ? "switch-disabled" : ""}`}>
@@ -40,12 +42,13 @@ export function Toggle({
         role="switch"
         checked={checked}
         disabled={disabled}
+        aria-label={label ? undefined : ariaLabel}
         onChange={(e) => onChange(e.target.checked)}
       />
       <span className="switch-track" aria-hidden>
         <span className="switch-thumb" />
       </span>
-      <span className="switch-label">{label}</span>
+      {label ? <span className="switch-label">{label}</span> : null}
     </label>
   );
 }

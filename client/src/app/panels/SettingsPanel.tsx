@@ -88,8 +88,8 @@ export function SettingsPanel({
             }}
           />
           <span>
-            When this app opens, try to start the ClamAV scanner daemon if it is not running (same as Dashboard →
-            Start).
+            When this app opens, try to start the ClamAV scanner engine if it is not running (same as Status →
+            Advanced → Start).
           </span>
         </label>
         <p className="hint settings-check-note">

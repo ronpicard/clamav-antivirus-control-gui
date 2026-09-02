@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppNavigation, NAV_ITEMS, type TabId } from "./app/navigation";
 import { api } from "./app/api";
 import { EMPTY_SCAN_SESSION, type Health, type ScanSessionState } from "./app/types";
+import { protectionProblems } from "./app/health";
 import { Dashboard } from "./app/panels/Dashboard";
 import { ScanPanel } from "./app/panels/ScanPanel";
 import { RealtimePanel } from "./app/panels/RealtimePanel";
@@ -152,27 +153,28 @@ export default function App() {
   }, [health, err, autoEnsureCronDefaults]);
 
   const activeTab = NAV_ITEMS.find((item) => item.id === tab) ?? NAV_ITEMS[0];
-  const coreProtectionReady =
-    !!health?.clamav.freshclamInstalled &&
-    !!health.clamav.clamdscanInstalled &&
-    !!health.clamav.daemonResponding;
+  const problems = protectionProblems(health);
+  const protectionReady = !!health && problems.length === 0;
 
   return (
     <div className="app-shell">
       <AppNavigation
         activeTab={tab}
-        protectionReady={coreProtectionReady}
+        protectionReady={protectionReady}
+        statusDetail={err ? "Can't reach the local service" : problems[0]?.short ?? null}
         loading={loading}
         onSelect={setTab}
       />
       <main className="app-main">
-        <header className="page-header">
-          <div>
-            <div className="page-eyebrow">{activeTab.group}</div>
-            <h1>{activeTab.label}</h1>
-            <p>{activeTab.title}</p>
-          </div>
-        </header>
+        {tab !== "home" && (
+          <header className="page-header">
+            <div>
+              <div className="page-eyebrow">{activeTab.group}</div>
+              <h1>{activeTab.label}</h1>
+              <p>{activeTab.title}</p>
+            </div>
+          </header>
+        )}
 
         {err && (
           <div className="card card-error" role="alert">

@@ -1,64 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, Play, RefreshCw, RotateCw, Square } from "lucide-react";
+import {
+  Activity,
+  Database,
+  Download,
+  Flame,
+  Play,
+  RefreshCw,
+  RotateCw,
+  ScanLine,
+  ShieldAlert,
+  ShieldCheck,
+  Square,
+} from "lucide-react";
 import { api } from "../api";
 import { Banner, TerminalOutputPanel, Toggle } from "../components";
+import { protectionProblems } from "../health";
 import type { Health, TerminalLogEntry } from "../types";
 import type { TabId } from "../navigation";
-
-function RealtimeMonitorSection({
-  running,
-  onRefresh,
-  controlsDisabled,
-}: {
-  running: boolean;
-  onRefresh: (silent?: boolean) => void | Promise<void>;
-  controlsDisabled?: boolean;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-
-  const setRunning = async (next: boolean) => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const r = await api(next ? "/api/realtime/start" : "/api/realtime/stop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      const j = await r.json();
-      if (j.ok) {
-        setMsg({ ok: true, text: next ? `Real-time started (${j.method})` : "Real-time stopped" });
-        void onRefresh(true);
-      } else {
-        setMsg({ ok: false, text: j.error || (next ? "Failed to start" : "Failed to stop") });
-      }
-    } catch (e) {
-      setMsg({ ok: false, text: String(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="dash-section">
-      <p className="section-label">Real-time folder monitor</p>
-      <p className="hint dash-section-hint">
-        Same as the Real-time tab — watches key folders and scans new or changed files.
-      </p>
-      {msg && <Banner ok={msg.ok}>{msg.text}</Banner>}
-      <div className="row">
-        <Toggle
-          checked={running}
-          disabled={!!controlsDisabled || busy}
-          onChange={(next) => void setRunning(next)}
-          label={running ? "Monitoring on" : "Monitoring off"}
-        />
-        {busy && <span className="spinner-inline" aria-hidden />}
-      </div>
-    </div>
-  );
-}
 
 function dnsDashboardLine(dns: Health["dns"] | undefined): { text: string; title: string } {
   if (!dns) return { text: "—", title: "" };
@@ -126,6 +84,7 @@ export function Dashboard({
   const [defStreaming, setDefStreaming] = useState(false);
   const [svcBusy, setSvcBusy] = useState(false);
   const [svcBanner, setSvcBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rtBusy, setRtBusy] = useState(false);
   const [cmdLogs, setCmdLogs] = useState<TerminalLogEntry[]>([]);
   const freshEsRef = useRef<EventSource | null>(null);
   const logPreRef = useRef<HTMLPreElement | null>(null);
@@ -287,6 +246,28 @@ export function Dashboard({
     }
   };
 
+  const setRealtime = async (next: boolean) => {
+    setRtBusy(true);
+    setSvcBanner(null);
+    try {
+      const r = await api(next ? "/api/realtime/start" : "/api/realtime/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const j = await r.json();
+      if (j.ok) {
+        void onRefresh(true);
+      } else {
+        setSvcBanner({ ok: false, text: j.error || (next ? "Could not turn on real-time protection" : "Could not turn off real-time protection") });
+      }
+    } catch (e) {
+      setSvcBanner({ ok: false, text: String(e) });
+    } finally {
+      setRtBusy(false);
+    }
+  };
+
   const c = health?.clamav;
   const fw = health?.firewall;
   const svc = health?.clamdService;
@@ -294,8 +275,12 @@ export function Dashboard({
   const fwOk = fw?.active === true;
   const fwUnknown = fw?.active === null || fw?.active === undefined;
 
+  const installed = !!c?.freshclamInstalled && !!c?.clamdscanInstalled;
   const daemonResponding = !!c?.daemonResponding;
   const serviceRunning = !!svc?.running;
+  const daemonRunning = daemonResponding || serviceRunning;
+  const rtRunning = !!health?.realtimeMonitor?.running;
+
   const daemonPillState: "ok" | "wait" = daemonResponding ? "ok" : "wait";
   const daemonPillLabel = daemonResponding
     ? "on / responding"
@@ -309,13 +294,23 @@ export function Dashboard({
   ]
     .filter(Boolean)
     .join(" — ");
-  const daemonRunning = daemonResponding || serviceRunning;
 
   const dns = health?.dns;
   const dnsPillOk = dns?.supported && dns.ok !== false;
   const dnsSummary = dnsDashboardLine(dns);
 
-  const anyBusy = svcBusy || !!busy || defStreaming;
+  const anyBusy = svcBusy || !!busy || defStreaming || rtBusy;
+
+  // Hero state: shared with the sidebar badge (see app/health.ts).
+  const problems = protectionProblems(health ?? null);
+  const firstProblem = problems[0];
+  const heroFix =
+    firstProblem?.id === "install"
+      ? { label: "Open Setup", onFix: () => onNavigate("auto-install") }
+      : firstProblem?.id === "engine"
+        ? { label: "Start engine", onFix: () => void clamdServiceAction("start") }
+        : null;
+  const protectedNow = problems.length === 0;
 
   return (
     <div className="card fade-in">
@@ -330,52 +325,36 @@ export function Dashboard({
       )}
       {!loading && health && (
         <>
-          <div className="status-grid">
-            <StatusPill
-              state={c?.freshclamInstalled ? "ok" : "bad"}
-              label="Definitions"
-              detail="freshclam"
-              onOpen={() => onNavigate("auto-install")}
-            />
-            <StatusPill
-              state={c?.clamdscanInstalled ? "ok" : "bad"}
-              label="Scanner"
-              detail="clamdscan"
-              onOpen={() => onNavigate("auto-install")}
-            />
-            <StatusPill
-              state={daemonPillState}
-              label="Daemon"
-              detail={daemonResponding ? "online" : "offline"}
-              title={daemonPillTitle || undefined}
-            />
-            <StatusPill
-              state={fwOk ? "ok" : fw?.active === false ? "bad" : "wait"}
-              label="Firewall"
-              detail={fwOk ? "on" : fw?.active === false ? "off" : "unknown"}
-              title={fw?.detail}
-            />
-            <StatusPill
-              state={health.realtimeMonitor?.running ? "ok" : "wait"}
-              label="Real-time"
-              detail={health.realtimeMonitor?.running ? "active" : "off"}
-              onOpen={() => onNavigate("realtime")}
-            />
-            <StatusPill
-              state={dnsPillOk ? "ok" : dns?.supported === false ? "bad" : "wait"}
-              label="DNS"
-              detail={dnsSummary.text}
-              detailClass="dns-pill-nums"
-              title={dnsSummary.title || undefined}
-              onOpen={() => onNavigate("dns")}
-            />
+          <div className="hero">
+            <div className={`hero-shield ${protectedNow ? "ok" : "warn"}`} aria-hidden>
+              {protectedNow ? <ShieldCheck size={44} strokeWidth={1.6} /> : <ShieldAlert size={44} strokeWidth={1.6} />}
+            </div>
+            <h2 className="hero-title">{protectedNow ? "You're protected" : "Attention needed"}</h2>
+            <p className="hero-sub">
+              {protectedNow
+                ? "Everything is running. Scans and real-time protection are active."
+                : firstProblem.text}
+            </p>
+            <div className="hero-actions">
+              <button
+                type="button"
+                className="btn btn-primary hero-scan-btn"
+                onClick={() => onNavigate("scan")}
+              >
+                <ScanLine size={17} aria-hidden /> Scan now
+              </button>
+              {heroFix && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={anyBusy}
+                  onClick={heroFix.onFix}
+                >
+                  {heroFix.label}
+                </button>
+              )}
+            </div>
           </div>
-
-          <RealtimeMonitorSection
-            running={!!health.realtimeMonitor?.running}
-            onRefresh={onRefresh}
-            controlsDisabled={anyBusy}
-          />
 
           {svcBanner && <Banner ok={svcBanner.ok}>{svcBanner.text}</Banner>}
 
@@ -386,70 +365,59 @@ export function Dashboard({
             </p>
           )}
 
-          <div className="dashboard-sections">
-            <div className="dash-section">
-              <p className="section-label">Firewall</p>
+          <div className="feature-list">
+            <div className="feature-row">
+              <span className={`feature-icon ${rtRunning ? "on" : ""}`} aria-hidden>
+                <Activity size={18} strokeWidth={1.8} />
+              </span>
+              <div className="feature-text">
+                <strong>Real-time protection</strong>
+                <span>Scans new and changed files the moment they appear</span>
+              </div>
+              <Toggle
+                checked={rtRunning}
+                disabled={anyBusy || !installed}
+                onChange={(next) => void setRealtime(next)}
+                ariaLabel="Real-time protection"
+              />
+            </div>
+
+            <div className="feature-row">
+              <span className={`feature-icon ${fwOk ? "on" : ""}`} aria-hidden>
+                <Flame size={18} strokeWidth={1.8} />
+              </span>
+              <div className="feature-text">
+                <strong>Firewall</strong>
+                <span>
+                  {fwUnknown
+                    ? "State unknown on this system"
+                    : "Blocks unwanted incoming connections"}
+                </span>
+              </div>
               <Toggle
                 checked={fwOk}
                 disabled={anyBusy || fwUnknown}
                 onChange={(next) => void firewallAction(next ? "on" : "off")}
-                label={fwOk ? "Firewall on" : fwUnknown ? "Firewall state unknown" : "Firewall off"}
+                ariaLabel="Firewall"
               />
             </div>
 
-            <div className="dash-section">
-              <p className="section-label">Scanner daemon</p>
-              <div className="action-grid">
-                {daemonRunning ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={anyBusy}
-                    onClick={() => void clamdServiceAction("stop")}
-                  >
-                    <Square size={14} aria-hidden /> Stop
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={anyBusy}
-                    onClick={() => void clamdServiceAction("start")}
-                  >
-                    <Play size={14} aria-hidden /> Start
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={anyBusy}
-                  onClick={() => void clamdServiceAction("restart")}
-                >
-                  <RotateCw size={14} aria-hidden /> Restart
-                </button>
+            <div className="feature-row">
+              <span className={`feature-icon ${installed ? "on" : ""}`} aria-hidden>
+                <Database size={18} strokeWidth={1.8} />
+              </span>
+              <div className="feature-text">
+                <strong>Virus definitions</strong>
+                <span>Keep threat signatures up to date</span>
               </div>
-            </div>
-
-            <div className="dash-section">
-              <p className="section-label">Quick actions</p>
-              <div className="action-grid">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={anyBusy}
-                  onClick={runFreshclam}
-                >
-                  <Download size={14} aria-hidden /> Update definitions
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={!!busy || defStreaming}
-                  onClick={() => void onRefresh(true)}
-                >
-                  <RefreshCw size={14} aria-hidden /> Refresh
-                </button>
-              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={anyBusy || !installed}
+                onClick={runFreshclam}
+              >
+                <Download size={13} aria-hidden /> Update
+              </button>
             </div>
           </div>
 
@@ -464,12 +432,85 @@ export function Dashboard({
               </div>
             </div>
           )}
-          <TerminalOutputPanel logs={cmdLogs} />
-          {log && (
-            <pre ref={logPreRef} className="log-box log-box-live">
-              {log}
-            </pre>
-          )}
+
+          <details className="advanced dash-advanced">
+            <summary>Advanced</summary>
+
+            <div className="status-grid dash-advanced-pills">
+              <StatusPill
+                state={c?.freshclamInstalled ? "ok" : "bad"}
+                label="Definitions"
+                detail="freshclam"
+                onOpen={() => onNavigate("auto-install")}
+              />
+              <StatusPill
+                state={c?.clamdscanInstalled ? "ok" : "bad"}
+                label="Scanner"
+                detail="clamdscan"
+                onOpen={() => onNavigate("auto-install")}
+              />
+              <StatusPill
+                state={daemonPillState}
+                label="Daemon"
+                detail={daemonResponding ? "online" : "offline"}
+                title={daemonPillTitle || undefined}
+              />
+              <StatusPill
+                state={dnsPillOk ? "ok" : dns?.supported === false ? "bad" : "wait"}
+                label="DNS"
+                detail={dnsSummary.text}
+                detailClass="dns-pill-nums"
+                title={dnsSummary.title || undefined}
+                onOpen={() => onNavigate("dns")}
+              />
+            </div>
+
+            <p className="section-label">Scanner engine (clamd)</p>
+            <div className="action-grid dash-advanced-actions">
+              {daemonRunning ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={anyBusy}
+                  onClick={() => void clamdServiceAction("stop")}
+                >
+                  <Square size={14} aria-hidden /> Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={anyBusy}
+                  onClick={() => void clamdServiceAction("start")}
+                >
+                  <Play size={14} aria-hidden /> Start
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={anyBusy}
+                onClick={() => void clamdServiceAction("restart")}
+              >
+                <RotateCw size={14} aria-hidden /> Restart
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={!!busy || defStreaming}
+                onClick={() => void onRefresh(true)}
+              >
+                <RefreshCw size={14} aria-hidden /> Refresh status
+              </button>
+            </div>
+
+            <TerminalOutputPanel logs={cmdLogs} />
+            {log && (
+              <pre ref={logPreRef} className="log-box log-box-live">
+                {log}
+              </pre>
+            )}
+          </details>
         </>
       )}
     </div>
