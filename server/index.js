@@ -1886,8 +1886,10 @@ async function getClamdServiceState() {
     if (pg.ok && pg.stdout.trim()) {
       return { running: true, unit: "clamd", method: "pgrep -x" };
     }
+    // Match only an executable named exactly `clamd`; a bare /clamd/ test also
+    // hits the `clamdscan --ping` this same health check runs concurrently.
     pg = await execQuick("pgrep", ["-fl", "clamd"]);
-    if (pg.ok && /clamd/i.test(pg.stdout || "")) {
+    if (pg.ok && /^\s*\d+\s+(?:\S*\/)?clamd(?:\s|$)/m.test(pg.stdout || "")) {
       return { running: true, unit: "clamd", method: "pgrep" };
     }
     const brew = resolveHomebrewBin();

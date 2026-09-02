@@ -8,6 +8,7 @@ import {
   RefreshCw,
   RotateCw,
   ScanLine,
+  Server,
   ShieldAlert,
   ShieldCheck,
   Square,
@@ -307,9 +308,7 @@ export function Dashboard({
   const heroFix =
     firstProblem?.id === "install"
       ? { label: "Open Setup", onFix: () => onNavigate("auto-install") }
-      : firstProblem?.id === "engine"
-        ? { label: "Start engine", onFix: () => void clamdServiceAction("start") }
-        : null;
+      : null;
   const protectedNow = problems.length === 0;
 
   return (
@@ -399,6 +398,28 @@ export function Dashboard({
                 disabled={anyBusy || fwUnknown}
                 onChange={(next) => void firewallAction(next ? "on" : "off")}
                 ariaLabel="Firewall"
+              />
+            </div>
+
+            <div className="feature-row">
+              <span className={`feature-icon ${daemonResponding ? "on" : ""}`} aria-hidden>
+                <Server size={18} strokeWidth={1.8} />
+              </span>
+              <div className="feature-text">
+                <strong>Scanner engine (clamd)</strong>
+                <span>
+                  {daemonResponding
+                    ? "Background daemon used by scheduled scans"
+                    : serviceRunning
+                      ? "Starting up — loading virus signatures…"
+                      : "Off. Only scheduled scans need it; manual and real-time scans still work"}
+                </span>
+              </div>
+              <Toggle
+                checked={daemonRunning}
+                disabled={anyBusy || !installed}
+                onChange={(next) => void clamdServiceAction(next ? "start" : "stop")}
+                ariaLabel="Scanner engine"
               />
             </div>
 

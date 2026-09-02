@@ -21,6 +21,12 @@ project follows semantic versioning.
 - `tempfile` as a Rust dev-dependency (test-only temp directories).
 
 ### Changed
+- **Status no longer reports "Attention needed" when the clamd daemon is
+  off.** Manual scans and real-time protection run standalone `clamscan`,
+  so a stopped daemon never reduced protection; only scheduled (cron) scans
+  use `clamdscan`. The daemon now appears as its own **Scanner engine**
+  row on Status with an on/off switch and a note about what it is for, and
+  the sidebar badge stays green.
 - **UI redesign** ported from the `clamav-antivirus-gui` repo: the top
   emoji tab bar is replaced by a grouped sidebar (Protection / System /
   Support) with `lucide-react` icons, a brand block with version badge, a
@@ -40,6 +46,11 @@ project follows semantic versioning.
   integration test.
 
 ### Fixed
+- **False "service on, daemon not answering yet" on macOS.** The health
+  check's `pgrep -fl clamd` fallback substring-matched the `clamdscan
+  --ping` probe the same health check runs concurrently, so the service
+  was reported as running when no `clamd` process existed. The fallback
+  now matches only an executable named exactly `clamd`.
 - **"Try again" after a connection error** silently refreshed without
   showing the loading state (the click event object was passed as the
   `silent` flag). It now performs a normal, visible refresh. The client

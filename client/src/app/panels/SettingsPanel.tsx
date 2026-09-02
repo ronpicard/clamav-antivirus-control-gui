@@ -88,8 +88,8 @@ export function SettingsPanel({
             }}
           />
           <span>
-            When this app opens, try to start the ClamAV scanner engine if it is not running (same as Status →
-            Advanced → Start).
+            When this app opens, try to start the ClamAV scanner engine if it is not running (same as the Scanner
+            engine switch on Status). The engine is only needed for scheduled scans.
           </span>
         </label>
         <p className="hint settings-check-note">
