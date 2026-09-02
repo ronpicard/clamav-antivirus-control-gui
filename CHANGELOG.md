@@ -8,6 +8,10 @@ project follows semantic versioning.
 
 ## [Unreleased]
 
+_Nothing yet — additions accumulate here for the next release._
+
+## [2.1.0] - 2026-09-02
+
 ### Added
 - **Unit test suites** alongside the existing integration test, all run by
   the new **`make test`** target and on every CI push:

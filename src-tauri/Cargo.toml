@@ -1,6 +1,6 @@
 [package]
 name = "clamav-control"
-version = "2.0.0"
+version = "2.1.0"
 description = "Control panel for ClamAV (Tauri shell)"
 authors = ["Ron Picard"]
 license = "MIT"
