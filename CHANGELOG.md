@@ -8,6 +8,10 @@ project follows semantic versioning.
 
 ## [Unreleased]
 
+_Nothing yet — additions accumulate here for the next release._
+
+## [2.2.0] - 2026-09-02
+
 ### Fixed
 - **Stale UI after updating.** The axum server served `index.html` with no
   `Cache-Control` header (dropping the Node helper's `no-store` behavior
