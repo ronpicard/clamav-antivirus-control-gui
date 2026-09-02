@@ -111,13 +111,27 @@ git push origin v1.1.0
 The **`Release`** workflow uses **`tauri-apps/tauri-action@v0`**. Watch it at:
 
 ```
-https://github.com/ronpicard/clamav-antivirus-control-gui/actions
+https://github.com/ronpicard/clamav-antivirus-ui/actions
 ```
 
 The published release lives at:
 
 ```
-https://github.com/ronpicard/clamav-antivirus-control-gui/releases/tag/v<version>
+https://github.com/ronpicard/clamav-antivirus-ui/releases/tag/v<version>
+```
+
+### If CI fails with "Resource not accessible by integration"
+
+GitHub can reject **release creation** from the workflow's `GITHUB_TOKEN`
+even though the workflow requests `contents: write` (this bit the v2.1.0
+release — every job built fine, then 403'd creating the release). The
+workaround: create the release yourself, then re-run the failed jobs so
+`tauri-action` finds the existing release and just uploads the installers
+to it:
+
+```bash
+gh release create v<version> --title "ClamAV Control v<version>" --notes "..."
+gh run rerun <run-id> --failed
 ```
 
 ### What CI builds
@@ -138,19 +152,21 @@ Every push and PR runs **`.github/workflows/ci.yml`**, which does `cargo check -
 
 ## 4. Bumping the version
 
-The same semver number lives in five places:
+The same semver number lives in six places:
 
 - `package.json` (root) — also drives the **UI version badge** via Vite's `define`.
 - `client/package.json`
 - `server/package.json`
 - `src-tauri/tauri.conf.json` — Tauri bundle metadata.
 - `src-tauri/Cargo.toml` — Rust crate version.
+- `src-tauri/Cargo.lock` — the crate's own entry; CI builds with `--locked`
+  and fails if this lags behind `Cargo.toml`.
 
 ```bash
 make bump-version VERSION=1.1.0
 ```
 
-It edits all five files in place, prints a diff hint, and tells you the next git steps. `make release VERSION=1.1.0` does bump + commit + tag + push for you.
+It edits all six files in place, prints a diff hint, and tells you the next git steps. `make release VERSION=1.1.0` does bump + commit + tag + push for you.
 
 Also update **`CHANGELOG.md`**: move bullets from `[Unreleased]` into a new `[1.1.0] — YYYY-MM-DD` section (Keep a Changelog format).
 

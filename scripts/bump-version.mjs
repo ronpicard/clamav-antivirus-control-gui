@@ -39,6 +39,12 @@ const TARGETS = [
     file: "src-tauri/Cargo.toml",
     update: (raw, version) => bumpCargoVersion(raw, version),
   },
+  {
+    // Cargo.lock embeds the crate's own version; CI builds with --locked
+    // and fails if it lags behind Cargo.toml.
+    file: "src-tauri/Cargo.lock",
+    update: (raw, version) => bumpCargoLockVersion(raw, version),
+  },
 ];
 
 export function bumpJsonField(raw, key, value) {
@@ -53,6 +59,14 @@ export function bumpCargoVersion(raw, version) {
   const re = /^(version\s*=\s*)"[^"]*"/m;
   if (!re.test(raw)) {
     throw new Error('top-level `version = "..."` not found in Cargo.toml');
+  }
+  return raw.replace(re, (_m, prefix) => `${prefix}"${version}"`);
+}
+
+export function bumpCargoLockVersion(raw, version) {
+  const re = /(name = "clamav-control"\nversion = )"[^"]*"/;
+  if (!re.test(raw)) {
+    throw new Error('`clamav-control` package entry not found in Cargo.lock');
   }
   return raw.replace(re, (_m, prefix) => `${prefix}"${version}"`);
 }

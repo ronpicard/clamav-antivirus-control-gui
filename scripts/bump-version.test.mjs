@@ -5,7 +5,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { SEMVER, bumpCargoVersion, bumpJsonField } from "./bump-version.mjs";
+import {
+  SEMVER,
+  bumpCargoLockVersion,
+  bumpCargoVersion,
+  bumpJsonField,
+} from "./bump-version.mjs";
 
 test("SEMVER accepts release, prerelease, and build-metadata versions", () => {
   assert.ok(SEMVER.test("1.0.0"));
@@ -51,4 +56,24 @@ test("bumpCargoVersion throws when no version line exists", () => {
   assert.throws(() => bumpCargoVersion('[package]\nname = "app"\n', "2.0.0"), {
     message: /not found in Cargo\.toml/,
   });
+});
+
+test("bumpCargoLockVersion updates only the clamav-control package entry", () => {
+  const raw =
+    '[[package]]\nname = "axum"\nversion = "0.7.9"\n\n' +
+    '[[package]]\nname = "clamav-control"\nversion = "1.0.0"\n\n' +
+    '[[package]]\nname = "serde"\nversion = "1.0.219"\n';
+
+  const out = bumpCargoLockVersion(raw, "2.0.0");
+
+  assert.match(out, /name = "clamav-control"\nversion = "2\.0\.0"/);
+  assert.match(out, /name = "axum"\nversion = "0\.7\.9"/);
+  assert.match(out, /name = "serde"\nversion = "1\.0\.219"/);
+});
+
+test("bumpCargoLockVersion throws when the package entry is missing", () => {
+  assert.throws(
+    () => bumpCargoLockVersion('[[package]]\nname = "axum"\nversion = "0.7.9"\n', "2.0.0"),
+    { message: /not found in Cargo\.lock/ }
+  );
 });

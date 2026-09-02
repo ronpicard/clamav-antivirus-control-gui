@@ -118,7 +118,7 @@ endif
 	git push origin v$(VERSION)
 	@echo
 	@echo "Tag v$(VERSION) pushed. CI is now building installers; watch:"
-	@echo "  https://github.com/ronpicard/clamav-antivirus-control-gui/actions"
+	@echo "  https://github.com/ronpicard/clamav-antivirus-ui/actions"
 
 # ---- Smoke -----------------------------------------------------------------
 smoke: stage ## Stage everything and run cargo check (fast \"does it still build\" gate).

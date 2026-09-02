@@ -8,7 +8,19 @@ project follows semantic versioning.
 
 ## [Unreleased]
 
-_Nothing yet — additions accumulate here for the next release._
+### Fixed
+- **`bump-version` now also updates `src-tauri/Cargo.lock`** (the crate's
+  own entry). Previously the lockfile lagged behind `Cargo.toml` after a
+  bump, which broke CI's `--locked` builds until `cargo check` regenerated
+  it by hand.
+- CI workflows run on **Node 22** (was 20): `node --test` with a quoted
+  glob needs Node 21+, so the test step failed on all three OSes; Node 20
+  is also deprecated on GitHub runners.
+- Corrected stale `clamav-antivirus-control-gui` repo URLs in the README,
+  RELEASE guide, and Makefile (the repo is `clamav-antivirus-ui`).
+- RELEASE guide documents the `GITHUB_TOKEN` "Resource not accessible by
+  integration" failure mode when CI creates the GitHub Release, and the
+  `gh release create` + re-run workaround.
 
 ## [2.1.0] - 2026-09-02
 

@@ -74,8 +74,8 @@ The npm scripts (`npm run tauri:dev`, `npm run tauri:build`, `npm run stage-taur
 ## Run from source (no installer)
 
 ```bash
-git clone https://github.com/ronpicard/clamav-antivirus-control-gui.git
-cd clamav-antivirus-control-gui
+git clone https://github.com/ronpicard/clamav-antivirus-ui.git
+cd clamav-antivirus-ui
 make install
 make dev
 ```
@@ -136,7 +136,7 @@ Outputs land under **`src-tauri/target/release/bundle/`**: `.dmg` / `.app` on ma
 ### Continuous builds on GitHub
 
 - **`.github/workflows/ci.yml`** runs cargo check, the Node script tests, all Rust tests, and a Tauri build on **Linux, macOS, and Windows** for every push and PR.
-- **`.github/workflows/release.yml`** runs the same matrix on a tag push (e.g. **`v1.0.0`**) and uploads all three platforms to a **[GitHub Release](https://github.com/ronpicard/clamav-antivirus-control-gui/releases)** via `tauri-apps/tauri-action`.
+- **`.github/workflows/release.yml`** runs the same matrix on a tag push (e.g. **`v1.0.0`**) and uploads all three platforms to a **[GitHub Release](https://github.com/ronpicard/clamav-antivirus-ui/releases)** via `tauri-apps/tauri-action`.
 
 **Unsigned builds:** On **macOS**, use **Right-click → Open** the first time. On **Windows**, SmartScreen may show "Windows protected your PC" for an unknown publisher — use **More info → Run anyway** if you trust the build. Code signing is not configured in this repo.
 
